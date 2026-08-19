@@ -1,0 +1,40 @@
+<srcSchema _cs="LGU Target Bulk API Master(Woo) (lgu)" created="2026-07-06 04:46:42.101Z"
+           createdBy-id="0" entitySchema="xtk:srcSchema" img="xtk:schema.png" label="LGU Target Bulk API Master(Woo)"
+           lastModified="2026-07-06 05:22:44.976Z" mappingType="sql" md5="5260CE0B25D983F17850EC88661728EE"
+           modifiedBy-id="0" name="lgu_target_bulk_master" namespace="lgu" xtkschema="xtk:srcSchema">
+  <createdBy _cs="Administrator (admin)"/>
+  <modifiedBy _cs="Administrator (admin)"/>
+
+  <enumeration basetype="byte" name="successFlag">
+    <value label="실패" name="fail" value="0"/>
+    <value label="성공" name="success" value="1"/>
+  </enumeration>
+
+  <element autopk="true" label="LGU Target Bulk API Master(Woo)" name="lgu_target_bulk_master">
+
+    <attribute desc="워커명+배치시퀀스 (예: TBAW1-003)" label="배치명" length="100" name="batchName"
+               type="string"/>
+
+    <attribute label="워커명" length="20" name="workerName" type="string"/>
+
+    <attribute label="처리건수" name="recordCount" type="long"/>
+
+    <attribute label="HTTP코드" name="httpCode" type="short"/>
+
+    <attribute enum="successFlag" label="성공여부" name="success" type="boolean"/>
+
+    <attribute desc="Adobe Target batchStatus 확인 URL" label="batchStatusURL" length="255"
+               name="batchStatusUrl" type="string"/>
+
+    <attribute desc="에러메시지(256자 잘림)" label="에러메시지" length="255" name="errorMessage"
+               type="string"/>
+
+    <attribute default="GetDate()" label="생성일" name="createdDate" type="datetime"/>
+
+    <attribute label="수정일" name="lastModified" type="datetime"/>
+
+    <dbindex name="idx_batchName" unique="true">
+      <keyfield xpath="@batchName"/>
+    </dbindex>
+  </element>
+</srcSchema>

@@ -1,0 +1,57 @@
+<srcSchema _cs="LGU Member Info (lgu)" created="2026-02-03 04:53:24.341Z" createdBy-id="0"
+           entitySchema="xtk:srcSchema" img="xtk:schema.png" label="LGU Member Info"
+           lastModified="2026-07-03 04:00:01.481Z" mappingType="sql" md5="58595104E6A7BF58A85CF0FC981EF879"
+           modifiedBy-id="0" name="lgu_member" namespace="lgu" xtkschema="xtk:srcSchema">
+  <createdBy _cs="Administrator (admin)"/>
+  <modifiedBy _cs="Administrator (admin)"/>
+  
+  <!-- MMS 수신동의 열거형 -->
+  <enumeration basetype="string" label="MMS수신동의" name="mmsConsentEnum">
+    <value label="동의" name="agreed" value="동의"/>
+    <value label="미동의" name="disagreed" value="미동의"/>
+  </enumeration>
+
+  <element autopk="true" label="LGU Member Info" name="lgu_member">
+    <!-- 멤버십 UID -->
+    <attribute desc="고객 멤버십 고유 식별자" label="멤버십UID" length="10" name="membershipUid"
+               type="string"/>
+    
+    <!-- MMS 수신동의 -->
+    <attribute desc="MMS 수신 동의 여부" enum="mmsConsentEnum" label="MMS수신동의" length="10"
+               name="mmsConsent" type="string"/>
+    
+    <!-- 요금제 코드 -->
+    <attribute desc="5G 요금제 코드" label="요금제코드" length="20" name="planCode" type="string"/>
+    
+    <!-- 요금제명 -->
+    <attribute desc="요금제 명칭" label="요금제명" length="50" name="planName" type="string"/>
+    
+    <!-- 전화번호 -->
+    <attribute desc="고객 휴대전화번호" label="전화번호" length="11" name="phoneNumber" type="string"/>
+    
+    <!-- 발송최적시간 -->
+    <attribute desc="메시지 발송 최적 시간 (HH:MM)" label="발송최적시간" length="5" name="optimalSendTime"
+               type="string"/>
+    
+    <!-- 생성/수정 정보 -->
+    <attribute desc="레코드 생성 일시" label="생성일" name="created" type="datetime"/>
+    <attribute desc="레코드 최종 수정 일시" label="수정일" name="lastModified" type="datetime"/>
+    
+    <!-- ibank woo 추가 -->
+    <!-- 타겟 API 전송여부 -->
+    <attribute desc="API y/n" label="API y/n" length="1" name="apiYn" type="string"/>
+
+    <dbindex name="idx_sg_planCode">
+      <keyfield xpath="@planCode"/>
+    </dbindex>
+
+    <dbindex name="idx_mt_apiYn_uid">
+      <keyfield xpath="@apiYn"/>
+      <keyfield xpath="@membershipUid"/>
+    </dbindex>
+
+    <dbindex name="idx_sg_membershipUid">
+      <keyfield xpath="@membershipUid"/>
+    </dbindex>
+  </element>
+</srcSchema>

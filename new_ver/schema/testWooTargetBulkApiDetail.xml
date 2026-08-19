@@ -1,0 +1,32 @@
+<srcSchema _cs="Test Woo Target Bulk API Detail (wootar)" created="2026-08-18 07:54:18.856Z"
+           createdBy-id="0" entitySchema="xtk:srcSchema" img="xtk:schema.png" label="Test Woo Target Bulk API Detail"
+           labelSingular="Test Woo Target Bulk API Detail" lastModified="2026-08-18 07:55:02.820Z"
+           mappingType="sql" md5="02247A3076F96484F9BE6633E660D867" modifiedBy-id="0"
+           name="testWooTargetBulkApiDetail" namespace="wootar" xtkschema="xtk:srcSchema">
+  <createdBy _cs="우해인 (hiwoo)"/>
+  <modifiedBy _cs="우해인 (hiwoo)"/>
+
+  <element autopk="true" label="Test Woo Target Bulk API Detail" name="testWooTargetBulkApiDetail">
+
+    <attribute desc="고객 멤버십 고유 식별자" label="멤버십UID" length="10" name="membershipUid"
+               type="string"/>
+
+    <attribute desc="세그 식별자(파이프 구분) - 255자 초과 가능성 검토 필요" label="세그ID" length="255"
+               name="segId" type="string"/>
+
+    <attribute default="GetDate()" desc="레코드 생성 일시 (DB가 채움)" label="생성일" name="createdDate"
+               type="datetime"/>
+
+    <attribute desc="레코드 최종 수정 일시" label="수정일" name="lastModified" type="datetime"/>
+
+    <!-- Master 로의 N:1 링크. FK(@master-id)와 그 인덱스는 확장 스키마에 자동 생성됨 -->
+    <element integrity="neutral" label="API배치마스터" name="master" revDesc="배치별 상세 로그"
+             revIntegrity="neutral" revLabel="상세로그" target="wootar:testWooTargetBulkApiMaster"
+             type="link"/>
+
+    <!-- insertOrUpdate(_key="@membershipUid") 의 조정 키 -->
+    <dbindex name="idx_membershipUid" unique="true">
+      <keyfield xpath="@membershipUid"/>
+    </dbindex>
+  </element>
+</srcSchema>

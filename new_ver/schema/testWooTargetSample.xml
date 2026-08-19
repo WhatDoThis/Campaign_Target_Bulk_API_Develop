@@ -1,0 +1,71 @@
+<srcSchema _cs="Test Woo Target Sample (wootar)" created="2026-08-18 07:00:01.952Z"
+           createdBy-id="0" entitySchema="xtk:srcSchema" img="xtk:schema.png" label="Test Woo Target Sample"
+           labelSingular="Test Woo Target Sample" lastModified="2026-08-19 04:58:17.345Z"
+           mappingType="sql" md5="59DAA9BCF68A530F844606157765B316" modifiedBy-id="0"
+           name="testWooTargetSample" namespace="wootar" xtkschema="xtk:srcSchema">
+  <createdBy _cs="우해인 (hiwoo)"/>
+  <modifiedBy _cs="우해인 (hiwoo)"/>
+  
+    <!-- 마케팅 수신동의 열거형 -->
+  <enumeration basetype="string" label="마켓팅수신동의" name="mConsentEnum">
+    <value label="동의" name="agreed" value="동의"/>
+    <value label="미동의" name="disagreed" value="미동의"/>
+  </enumeration>
+
+  <!-- Target API 전송여부 열거형 -->
+  <enumeration basetype="string" label="API전송여부" name="apiYnEnum">
+    <value label="미전송" name="no" value="N"/>
+    <value label="전송완료" name="yes" value="Y"/>
+  </enumeration>
+
+  <element autopk="true" label="Test Woo Target Sample" name="testWooTargetSample">
+
+    <!-- 업무 키. 유니크 인덱스 자동 생성 -->
+    <key name="membershipUid">
+      <keyfield xpath="@membershipUid"/>
+    </key>
+
+    <!-- 멤버십 UID -->
+    <attribute desc="고객 멤버십 고유 식별자" label="멤버십UID" length="10" name="membershipUid"
+               notNull="true" type="string"/>
+
+    <!-- 마케팅 수신동의 -->
+    <attribute desc="마케팅 수신 동의 여부" enum="mConsentEnum" label="마케팅수신동의" length="10"
+               name="mConsent" type="string"/>
+
+    <!-- 요금제 코드 -->
+    <attribute desc="5G 요금제 코드" label="요금제코드" length="20" name="planCode" type="string"/>
+
+    <!-- 요금제명 -->
+    <attribute desc="요금제 명칭" label="요금제명" length="50" name="planName" type="string"/>
+
+    <!-- 전화번호 -->
+    <attribute desc="고객 휴대전화번호" label="전화번호" length="11" name="phoneNumber" type="string"/>
+
+    <!-- 발송최적시간 -->
+    <attribute desc="메시지 발송 최적 시간 (HH:MM)" label="발송최적시간" length="5" name="optimalSendTime"
+               type="string"/>
+
+    <!-- 생성/수정 정보 -->
+    <attribute desc="레코드 생성 일시" label="생성일" name="created" sqlDefault="GetDate()"
+               type="datetime"/>
+    <attribute desc="레코드 최종 수정 일시" label="수정일" name="lastModified" type="datetime"/>
+
+    <!-- 타겟 API 전송여부. N=미전송 / Y=전송완료
+         sqlDefault는 컬럼 신규 생성 시에만 적용됨 (기존 컬럼은 미반영)
+         → 현행 NULL 방어는 워커 SQL의 'OR sapiyn IS NULL'이 담당 -->
+    <attribute desc="Target Bulk API 전송 여부" enum="apiYnEnum" label="API 전송여부" length="1"
+               name="apiYn" notNull="true" sqlDefault="'N'" type="string"/>
+
+    <!-- 워커 조회 전용 복합 인덱스. 선행 컬럼 apiYn -->
+    <dbindex name="idx_mt_apiYn_uid">
+      <keyfield xpath="@apiYn"/>
+      <keyfield xpath="@membershipUid"/>
+    </dbindex>
+
+    <dbindex name="idx_sg_planCode">
+      <keyfield xpath="@planCode"/>
+    </dbindex>
+
+  </element>
+</srcSchema>

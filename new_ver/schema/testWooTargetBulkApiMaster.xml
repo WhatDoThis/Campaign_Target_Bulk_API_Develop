@@ -1,0 +1,96 @@
+<srcSchema _cs="Test Woo Target Bulk API Master (wootar)" created="2026-08-18 07:53:14.819Z"
+           createdBy-id="0" entitySchema="xtk:srcSchema" img="xtk:schema.png" label="Test Woo Target Bulk API Master"
+           labelSingular="Test Woo Target Bulk API Master" lastModified="2026-08-18 09:39:00.434Z"
+           mappingType="sql" md5="F8A92ACF72E0CBD1CF3E5AA8F786E459" modifiedBy-id="0"
+           name="testWooTargetBulkApiMaster" namespace="wootar" xtkschema="xtk:srcSchema">
+  <createdBy _cs="우해인 (hiwoo)"/>
+  <modifiedBy _cs="우해인 (hiwoo)"/>
+  
+  <!-- 성공여부: basetype 과 attribute type 을 반드시 일치시킴 (byte) -->
+  <enumeration basetype="byte" label="성공여부" name="successFlag">
+    <value label="실패" name="fail" value="0"/>
+    <value label="성공" name="success" value="1"/>
+  </enumeration>
+
+  <!-- Target batchStatus 폴링 결과 -->
+  <enumeration basetype="string" label="배치상태" name="batchStatusEnum">
+    <value label="처리중" name="incomplete" value="incomplete"/>
+    <value label="완료" name="complete" value="complete"/>
+    <value label="중단" name="stuck" value="stuck"/>
+  </enumeration>
+
+  <element autopk="true" label="Test Woo Target Bulk API Master" name="testWooTargetBulkApiMaster">
+
+    <!-- ===== 배치 식별 ===== -->
+    <attribute desc="워커명-runId-배치번호 (예: TBAW1-20260818093000R1-1)" label="배치명"
+               length="100" name="batchName" type="string"/>
+
+    <attribute desc="워커 식별자 (TBAW1~TBAW5)" label="워커명" length="20" name="workerName"
+               type="string"/>
+
+    <attribute desc="Factory가 전 워커에 동일 주입한 회차 ID" label="실행ID" length="40"
+               name="runId" type="string"/>
+
+    <!-- ===== 전송 요청 정보 ===== -->
+    <attribute desc="이 배치로 전송한 레코드 수" label="처리건수" name="recordCount" type="long"/>
+
+    <attribute desc="API 재시도 횟수 (1=첫 시도 성공)" label="시도횟수" name="attemptCount" type="byte"/>
+
+    <attribute desc="HTTP 요청~응답 소요시간(ms)" label="소요시간(ms)" name="elapsedMs" type="long"/>
+
+    <!-- ===== 전송 결과 (1차: HTTP / 2차: 비즈니스) ===== -->
+    <attribute label="HTTP코드" name="httpCode" type="short"/>
+
+    <attribute desc="0=실패, 1=성공 (HTTP 200 + success=true 동시 충족 시 1)" enum="successFlag"
+               label="성공여부" name="success" type="byte"/>
+
+    <attribute desc="에러 메시지 (길이 제한 없음)" label="에러메시지" name="errorMessage" type="memo"/>
+
+    <!-- ===== batchStatus 짧은 조회 (워커 POST 직후 1~N회. incomplete면 후속 재조회) ===== -->
+    <attribute desc="Adobe Target batchStatus 확인 URL" label="batchStatusURL" length="255"
+               name="batchStatusUrl" type="string"/>
+
+    <attribute desc="batchStatus 조회 결과 상태" enum="batchStatusEnum" label="배치상태" length="20"
+               name="batchStatus" type="string"/>
+
+    <attribute desc="Target이 실제로 소비한 행 수" label="소비건수" name="consumedCount" type="long"/>
+
+    <attribute desc="프로필 갱신 성공 건수" label="갱신성공" name="successfulUpdates" type="long"/>
+
+    <attribute desc="프로필 갱신 실패 건수" label="갱신실패" name="failedUpdates" type="long"/>
+
+    <attribute desc="Target에서 프로필을 찾지 못한 건수" label="프로필없음" name="profilesNotFound"
+               type="long"/>
+
+    <attribute desc="batchStatus 마지막 조회 시각" label="상태확인일" name="statusCheckedDate"
+               type="datetime"/>
+
+    <!-- ===== 감사 정보 ===== -->
+    <attribute default="GetDate()" desc="레코드 생성 일시 (DB가 채움)" label="생성일" name="createdDate"
+               type="datetime"/>
+
+    <attribute desc="레코드 최종 수정 일시" label="수정일" name="lastModified" type="datetime"/>
+
+    <!-- ===== 인덱스 ===== -->
+    <!-- insertOrUpdate(_key="@batchName") 의 조정 키. unique 필수 -->
+    <dbindex name="idx_batchName" unique="true">
+      <keyfield xpath="@batchName"/>
+    </dbindex>
+
+    <!-- 폴링 워크플로우: "미확인 성공 배치" 조회용 -->
+    <dbindex name="idx_success_status">
+      <keyfield xpath="@success"/>
+      <keyfield xpath="@batchStatus"/>
+    </dbindex>
+
+    <!-- 실행 회차별 조회 / 퍼지 작업용 -->
+    <dbindex name="idx_runId">
+      <keyfield xpath="@runId"/>
+    </dbindex>
+
+    <dbindex name="idx_worker_created">
+      <keyfield xpath="@workerName"/>
+      <keyfield xpath="@createdDate"/>
+    </dbindex>
+  </element>
+</srcSchema>
