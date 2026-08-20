@@ -354,6 +354,7 @@ BulkApiWorker.prototype.generateSegId = function() {
 // ============================================================
 // 멤버 조회 — UID 범위 + 커서 페이징
 //   첫 호출: uidStart 이상 / 이후: 직전 배치 마지막 UID 초과
+//   orderBy @membershipUid ASC. CSV·Detail 행 순서 = UID 오름차순
 //
 //   [주의] NULL 도 미전송으로 본다. 갱신 SQL과 동일 (3값 논리)
 //          Sample은 notNull+sqlDefault N 이라 결과는 @apiYn='N'과 같음

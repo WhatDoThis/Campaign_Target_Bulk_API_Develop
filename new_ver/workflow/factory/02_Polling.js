@@ -27,7 +27,7 @@ if (String(instance.vars.nextAction) === "finish") {
   var STRICT      = (String(instance.vars.STRICT_RUNID) === "true");
   var ABORT_ERR   = (String(instance.vars.ABORT_ON_WORKER_ERROR) === "true");
   var MAX_READY   = NUM(instance.vars.MAX_READY_POLL, 5);
-  var MAX_RUN     = NUM(instance.vars.MAX_RUN_POLL, 180);
+  var MAX_RUN     = NUM(instance.vars.MAX_RUN_POLL, 360);
   var GRAND_TOTAL = NUM(instance.vars.GRAND_TOTAL, 0);
 
   var poll = NUM(instance.vars.pollCount) + 1;

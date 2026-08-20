@@ -2,6 +2,9 @@
 
 ## Log Index
 
+27. 2026-08-20 GitHub Develop 리모트 동기화
+26. 2026-08-20 Factory 분할을 UID 오름차순 offset 으로 변경
+25. 2026-08-20 Factory에서 ENABLED·DRY_RUN 제거
 24. 2026-08-20 GitHub Develop 리모트 동기화
 23. 2026-08-20 워커 상한을 15로 변경
 22. 2026-08-20 Factory/Worker 주석·가드레일 보강
@@ -28,6 +31,30 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+27. 2026-08-20 GitHub Develop 리모트 동기화
+Purpose: Factory 운영 스위치 정리와 UID 오름차순 offset 분할을 origin/main에 올린다.
+Changes:
+
+- ENABLED/DRY_RUN 제거, dryRun은 스모크 전용
+- arith/prefix 분할 제거, pending membershipUid 오름차순 앞 500만 건
+Changed files: docs/log/log.md, new_ver/docs/newLogic.md, new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js
+
+26. 2026-08-20 Factory 분할을 UID 오름차순 offset 으로 변경
+Purpose: PRD 고객번호는 U+자릿수가 아니므로 arith/prefix 를 제거하고, pending 을 membershipUid 순으로 앞 500만 건만 보낸다.
+Changes:
+
+- 00: UID_PREFIX/DIGITS/PARTITION 삭제. ROUND_LIMIT=GRAND_TOTAL=5000000. MAX_RUN=360
+- 01: offset 경계만. UID-1 산술 없음. 라이브러리 조회 주석에 오름차순 명시
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/js/testWooBulkApiWorker.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+25. 2026-08-20 Factory에서 ENABLED·DRY_RUN 제거
+Purpose: 정지는 캔버스, dryRun은 스모크가 담당하므로 운영 Factory 설정에서 중복 스위치를 뺀다. GRAND_TOTAL 주석을 누적 sent로 바로잡는다.
+Changes:
+
+- 00에서 ENABLED/DRY_RUN 삭제. 01 PostEvent dryRun은 항상 false
+- GRAND_TOTAL 주석: 한 방 UID 구간이 아님, pending min부터, 9자리 패딩
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/docs/newLogic.md, docs/log/log.md
 
 24. 2026-08-20 GitHub Develop 리모트 동기화
 Purpose: 최초 푸시 이후 스모크·Factory·가드레일 변경을 origin/main에 올린다.

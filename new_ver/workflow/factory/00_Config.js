@@ -28,18 +28,7 @@ loadLibrary("wootar:testWooBulkApiWorker.js", false);
 // # 1. [Config] 운영자가 만지는 값만 이 객체. 01/02 는 instance.vars 만 본다.
 var FACTORY_CFG = {
 
-  /* --- [F1] 킬 스위치 / 전송 모드 ------------------------------------- */
-  // ENABLED: WF 를 정지하지 않고 라운드 시작 전에 멈춘다.
-  //   true  = 01 분배 진행
-  //   false = nextAction=finish. 01/02 는 바로 생략
-  ENABLED       : true,
-
-  // DRY_RUN: 시그널 dryRun="true"|"false" 로 워커에 전달.
-  //   true  = POST·apiYn 생략. 조회/CSV/Master/Detail 은 수행 (스모크 T6b 와 동일)
-  //   false = 실전송. 첫 테스트는 false + [F3] GRAND_TOTAL 로 물량을 막는다
-  DRY_RUN       : false,
-
-  /* --- [F2] 워커 규모. 가드레일: 1 ~ WORKER_MAX ---------------------- */
+  /* --- [F1] 워커 규모. 가드레일: 1 ~ WORKER_MAX ---------------------- */
   // WORKER_COUNT: 이번 운영에 쓸 TBAWn 개수. 초기 5, 이후 6..15 로 늘림.
   //   가드레일: 1 미만 → 1. WORKER_MAX 초과 → WORKER_MAX 로 클램프 (로그 WARN)
   //   늘릴 때: TBAWn WF 를 먼저 Start(state=11) 한 뒤 이 값을 올린다.
@@ -51,32 +40,26 @@ var FACTORY_CFG = {
   //   15개 기준 워커당 ≈25.7초 간격. 라이브러리 BULK_CFG.WORKER_MAX 와 같게 유지
   WORKER_MAX    : 15,
 
-  /* --- [F3] 물량 상한. 가드레일: 첫 테스트는 둘 다 25000 --------------- */
-  // ROUND_LIMIT: 한 라운드에서 분배할 UID 폭 상한 (arith 이면 minUid 부터 N개).
-  //   워커5 × BATCH_SIZE 5000 = 25000 이면 워커당 약 1배치
-  //   가드레일: 1 미만이면 코드에서 25000. GrandTotal 잔여보다 크면 잔여로 잘림
-  ROUND_LIMIT   : 25000,
+  /* --- [F2] 물량 상한. 이번 실행 500만 건 (pending UID 오름차순) -------- */
+  // ROUND_LIMIT: 한 라운드에서 워커에 나눠 줄 pending 행 수 (정렬 목록의 앞 N건).
+  //   GRAND_TOTAL 과 같게 두면 한 라운드에 목표 건수를 다 넣는다.
+  //   가드레일: 1 미만이면 5000000. GrandTotal 잔여보다 크면 잔여로 잘림
+  ROUND_LIMIT   : 500000,
 
-  // GRAND_TOTAL: Factory 전체 누적 sent 상한. 02 가 워커 보고 sent 합으로 판정.
+  // GRAND_TOTAL: 이 Factory 실행의 누적 성공 sent 상한. 02 가 워커 보고 sent 합으로 판정.
   //   0 = 무제한 (pending 이 없을 때까지 라운드 반복)
-  //   가드레일: 첫 테스트 25000. 키울 때는 0 또는 더 큰 값. 추정 span 이 아니라 실제 sent
-  GRAND_TOTAL   : 25000,
+  //   5000000 = 지금 pending 을 membershipUid 오름차순으로 앞에서 500만 건만 전송
+  //   시작점은 테이블 첫 행이 아니라 apiYn N/NULL 인 가장 앞 UID
+  GRAND_TOTAL   : 5000000,
 
-  /* --- [F4] UID 분할. 샘플은 U + 9자리, 밀도 1 → arith --------------- */
-  // PARTITION: arith = 숫자 산술(조회 2회). offset = startLine 으로 경계 UID 조회.
-  //   가드레일: 샘플처럼 연속 UID 면 arith. 공백·비연속이면 offset (워커 수만큼 조회)
-  PARTITION     : "arith",
-
-  // UID_PREFIX / UID_DIGITS: membershipUid = prefix + zero-pad 숫자.
-  //   가드레일: 샘플 스키마는 "U" + 9자리 (U000000001). PRD UID 형식이 다르면 둘 다 맞춤
-  UID_PREFIX    : "U",
-  UID_DIGITS    : 9,
-
-  // EXACT_COUNT: true 면 pending count 조회 후 remaining 을 min(limit, count).
-  //   가드레일: 5천만 건 count 는 비쌈. 기본 false (범위만 보고 분배, 빈 구간은 워커가 0건 종료)
+  /* --- [F3] 분할. prefix/자릿수 없음. 복잡한 고객번호도 동일 ----------- */
+  // 01 은 pending 을 @membershipUid 오름차순으로 두고 startLine(offset) 으로 경계를 찍는다.
+  //   워커·라이브러리 조회도 같은 orderBy. CSV 행 순서는 UID 오름차순
+  //   PRD 고객번호가 숫자가 아니어도 됨. 정렬은 스키마 문자열 순서(콜레이션)
+  // EXACT_COUNT: true 면 pending count 로 remaining 을 자른다. 5천만 count 는 비쌈
   EXACT_COUNT   : false,
 
-  /* --- [F5] 워커 WF 이름. {n} = 1..WORKER_COUNT ---------------------- */
+  /* --- [F4] 워커 WF 이름. {n} = 1..WORKER_COUNT ---------------------- */
   // WORKER_WF: PostEvent 대상 내부명. TBAW1, TBAW2, ...
   // WORKER_NAME: 로그·batchName·Option 키에 쓰는 워커 식별자. 보통 WF 명과 동일
   // WORKER_SIG: 각 워커 캔버스의 시그널 활동명. 복사 배포면 전부 sigWorker
@@ -84,7 +67,7 @@ var FACTORY_CFG = {
   WORKER_NAME   : "TBAW{n}",
   WORKER_SIG    : "sigWorker",
 
-  /* --- [F6] 상태 Option / 폴링. 설정값이 아니라 핸드셰이크 ----------- */
+  /* --- [F5] 상태 Option / 폴링. 설정값이 아니라 핸드셰이크 ----------- */
   // OPT_PREFIX: setOption 키 = prefix + workerName → WORKER_DONE_TBAW1
   //   가드레일: 설정 저장소로 쓰지 않음. 값 형식은 {runId}|status[|sent|failed]
   OPT_PREFIX    : "WORKER_DONE_",
@@ -102,14 +85,14 @@ var FACTORY_CFG = {
   MAX_READY     : 5,
 
   // MAX_RUN: 라운드 전체 폴링 횟수. 초과 시 ROUND_TIMEOUT 으로 pending 을 끊음.
-  //   가드레일: Wait 1m × 180 = 3시간. 긴 배치는 이 값을 올림
-  MAX_RUN       : 180,
+  //   가드레일: Wait 1m × 360 = 6시간. 500만 건·워커5 는 1~3시간 예상, OFFSET 조회 포함
+  MAX_RUN       : 360,
 
   // STAGGER_POST: PostEvent 사이 sleep(ms). 라이브러리 첫 POST 분산과 별개.
   //   가드레일: 0 이면 발사 간격 없음. 동시 기동 폭주는 STAGGER_SLOT_MS 가 1차 방어
   STAGGER_POST  : 300,
 
-  /* --- [F7] 배치 행수 ------------------------------------------------- */
+  /* --- [F6] 배치 행수 ------------------------------------------------- */
   // BATCH_SIZE: 워커 1회 조회/POST 행수. 시그널 batchSize 로 전달.
   //   가드레일: 0 = BULK_CFG.BATCH_SIZE (5000). 최종 1 ~ Target LIMIT_ROWS(500000)
   BATCH_SIZE    : 0
@@ -153,11 +136,8 @@ instance.vars.PENDING_COND   = "(@apiYn = 'N' OR @apiYn IS NULL)";
 instance.vars.WORKER_COUNT   = wCount;
 instance.vars.WORKER_MAX     = wMax;
 instance.vars.BATCH_SIZE     = batch;
-instance.vars.ROUND_LIMIT    = parseInt(FACTORY_CFG.ROUND_LIMIT, 10) || 25000;
+instance.vars.ROUND_LIMIT    = parseInt(FACTORY_CFG.ROUND_LIMIT, 10) || 5000000;
 instance.vars.GRAND_TOTAL    = parseInt(FACTORY_CFG.GRAND_TOTAL, 10) || 0;
-instance.vars.PARTITION_MODE = String(FACTORY_CFG.PARTITION || "arith");
-instance.vars.UID_PREFIX     = String(FACTORY_CFG.UID_PREFIX || "U");
-instance.vars.UID_DIGITS     = parseInt(FACTORY_CFG.UID_DIGITS, 10) || 9;
 instance.vars.EXACT_COUNT    = FACTORY_CFG.EXACT_COUNT ? "true" : "false";
 instance.vars.WORKER_WF_TPL  = String(FACTORY_CFG.WORKER_WF);
 instance.vars.WORKER_NAME_TPL= String(FACTORY_CFG.WORKER_NAME);
@@ -166,26 +146,18 @@ instance.vars.OPT_PREFIX     = String(FACTORY_CFG.OPT_PREFIX || "WORKER_DONE_");
 instance.vars.STRICT_RUNID   = FACTORY_CFG.STRICT_RUNID ? "true" : "false";
 instance.vars.ABORT_ON_WORKER_ERROR = FACTORY_CFG.ABORT_ON_ERR ? "true" : "false";
 instance.vars.MAX_READY_POLL = parseInt(FACTORY_CFG.MAX_READY, 10) || 5;
-instance.vars.MAX_RUN_POLL   = parseInt(FACTORY_CFG.MAX_RUN, 10) || 180;
+instance.vars.MAX_RUN_POLL   = parseInt(FACTORY_CFG.MAX_RUN, 10) || 360;
 instance.vars.STAGGER_POST_MS= parseInt(FACTORY_CFG.STAGGER_POST, 10) || 0;
-instance.vars.DRY_RUN        = FACTORY_CFG.DRY_RUN ? "true" : "false";
 instance.vars.CUSTOM_ATTR    = String(BULK_CFG.CUSTOM_ATTR || "");
 instance.vars.round          = 0;   // 01 이 라운드마다 +1
 instance.vars.globalProcessed= 0;   // 02 가 sent 합을 누적
 instance.vars.pollCount      = 0;   // 02 가 라운드마다 0 으로 리셋 후 +1
-
-if (!FACTORY_CFG.ENABLED) {
-  instance.vars.nextAction = "finish";
-  logInfo("[Config] ENABLED=false → finish");
-} else {
-  instance.vars.nextAction = "";
-}
+instance.vars.nextAction     = "";
 
 logInfo("[Config] 워커 " + wCount + "/" + wMax
   + " / batch " + batch
   + " / roundLimit " + instance.vars.ROUND_LIMIT
   + " / grandTotal " + instance.vars.GRAND_TOTAL
   + " / 스로틀 ~" + throttleMs + "ms"
-  + " / dryRun=" + instance.vars.DRY_RUN
   + " / custom=" + (instance.vars.CUSTOM_ATTR || "(none)")
   + " / schema " + schema);

@@ -91,30 +91,27 @@ Start
 
 설정은 `FACTORY_CFG` + `loadLibrary` 후 `BULK_CFG`. getOption으로 설정을 읽지 않는다.
 
-조절 지점: `WORKER_COUNT`(5~15), `ROUND_LIMIT`, `GRAND_TOTAL`(첫 테스트 25000), `DRY_RUN`, `ENABLED`.
+조절 지점: `WORKER_COUNT`(5~15), `ROUND_LIMIT`, `GRAND_TOTAL`(이번 실행 5000000).
 
 스키마·배치 크기·CUSTOM_ATTR은 `BULK_CFG`. Option 키는 `WORKER_DONE_TBAWn`.
 
 ### 4.2 01_WorkerDistributor
 
-스모크 03_Fire와 같은 PostEvent 계약. min/max는 SQL, 분할은 arith(기본).
+스모크 03_Fire와 같은 PostEvent 계약. 분할은 pending `@membershipUid` 오름차순 offset. prefix/자릿수 없음.
 
-1. 미전송 min/max UID 조회 (`PENDING_COND`).
-2. 없으면 `finish`.
-3. `ROUND_LIMIT`와 `GRAND_TOTAL`로 이번 라운드 상한.
-4. `EXACT=true`면 count. 아니면 범위만 보고 remaining = limit.
-5. `runId = yyyyMMddHHmmss + R + round`.
-6. 분할:
-   - `arith`(권장): UID가 `{prefix}{숫자패딩}`일 때 산술. 조회 2회.
-   - `offset`: startLine으로 경계 UID. 워커 수만큼 조회. 공백 UID에 안전.
-7. 워커별 Option: `{runId}|ready` 또는 `{runId}|skip`.
-8. PostEvent vars: `runId`, `workerName`, `uidStart`, `uidEnd`, `batchSize`, `optKey`, `dryRun`, `workerCount`(실발사 수), `customAttr`, `authToken`.
-9. 할당 0이거나 워커 WF가 시작됨(11)이 아니면 `skip`. 전원 미발사이면 `finish`.
-10. PostEvent 사이 `STAGGER_POST` ms.
+1. pending 첫 UID (`orderBy @membershipUid` startLine=0). 없으면 `finish`.
+2. `ROUND_LIMIT`와 `GRAND_TOTAL` 잔여로 이번 라운드 행 수 remaining.
+3. `EXACT=true`면 count. 아니면 remaining = limit (앞 N건).
+4. `runId = yyyyMMddHHmmss + R + round`.
+5. offset 분할: 정렬 목록에서 워커 수만큼 경계 UID 조회. 닫힌 구간. UID-1 산술 없음.
+6. 워커별 Option: `{runId}|ready` 또는 `{runId}|skip`.
+7. PostEvent vars: `runId`, `workerName`, `uidStart`, `uidEnd`, `batchSize`, `optKey`, `dryRun=false`, `workerCount`(실발사 수), `customAttr`, `authToken`.
+8. 할당 0이거나 워커 WF가 시작됨(11)이 아니면 `skip`. 전원 미발사이면 `finish`.
+9. PostEvent 사이 `STAGGER_POST` ms.
 
 skip 워커도 Option을 남긴다. 이전 라운드 `done` 잔존으로 폴링이 끝나는 구멍을 막는다.
 
-arith는 샘플 UID(`U` + 9자리, 밀도 1) 전제. 비연속이면 `PARTITION=offset`.
+워커·라이브러리 조회도 `@membershipUid` 오름차순이라 CSV 행 순서가 UID 순이다.
 
 워커 WF `TBAWn`이 없으면 skip 로그. 늘릴 때 WF를 먼저 Start 한다.
 
@@ -140,7 +137,7 @@ Option 값: `{runId}|{status}` 또는 `{runId}|done|{sent}|{failed}`.
 
 | 공유 자원 | 안전 장치 |
 |---|---|
-| Sample 행 | UID 닫힌 구간 비중첩. 조회 `>=start <=end`, 커서는 `> lastUid` |
+| Sample 행 | pending 을 UID 오름차순 offset 으로 닫힌 구간. 조회 `>=start <=end`, 커서는 `> lastUid` |
 | apiYn UPDATE | 배치 first~last. 구간이 안 겹치면 행 경합 없음 |
 | Master | `batchName = {workerName}-{runId}-{batchNo}` unique |
 | Detail | `_key=@membershipUid`. 구간 비중첩이면 같은 UID를 두 워커가 안 씀 |
@@ -493,7 +490,7 @@ Fetch 404는 공식 적재 지연(최대 24시간)일 수 있다. 제출 성공�
 
 다음 Phase에서 할 일:
 
-- Campaign에 TBAWFactory + TBAW1..5 를 올리고 GRAND_TOTAL=25000 으로 첫 실전송
+- Campaign에 TBAWFactory + TBAW1..5 를 올리고 GRAND_TOTAL=5000000 으로 첫 실전송
 - 워커를 6..15로 늘리며 라운드 소요를 맞춘다. WORKER_COUNT와 Start된 WF 수를 같게
 - incomplete Master 재조회 잡 (선택)
 - Campaign 콘솔에서 라이브러리 내부명(`.js` 여부) 확인 후 `loadLibrary` 맞추기
