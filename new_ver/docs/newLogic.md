@@ -14,11 +14,11 @@ Adobe Campaign Classic Factory가 미전송 회원(`apiYn = N`)을 UID 구간으
 |---|---|---|
 | `js/testWooBulkApiWorker.js` | 전송·로그·apiYn. 워커 N개가 `loadLibrary`로 공유 | 기준 구현. 검수 보완(인증·escape·짧은 batchStatus·runId) 반영 |
 | `schema/*.xml` | 샘플 원천 + Master/Detail 로그 | 리팩토링 완료. Sample은 확정. Master 중복 속성만 검수에서 제거 |
-| `workflow/factory/*` | 분배·폴링·설정 | 프로토타입. 그대로 운영 투입 불가 |
-| `workflow/worker/worker.js` | Signal → 라이브러리 실행 | 프로토타입. Option 포맷이 Factory와 어긋남 |
-| `test/*` | Smoke 워크플로우 | 프로토타입. 라이브러리 검증용 캔버스 |
+| `workflow/factory/*` | 분배·폴링·설정 | 스모크 계약으로 재작성. 워커 5→15 |
+| `workflow/worker/worker.js` | Signal → 라이브러리 실행 | `{runId}|status` 또는 `{runId}|done|sent|failed` |
+| `test/*` | Smoke 워크플로우 | 5차 FAIL=0 통과. 라이브러리 계약 검증 완료 |
 
-다음 Phase: 라이브러리를 기준으로 Factory/Worker를 수정·재생성·삭제한다. 라이브러리 잔여 이슈는 `8.2`를 본다.
+다음: Campaign에 TBAWFactory + TBAW1..5 를 올리고 2.5만 건으로 첫 실전송. 워커는 15까지 늘린다.
 
 ---
 
@@ -49,11 +49,11 @@ new_ver/
   schema/testWooTargetSample.xml          샘플 고객. 확정. PRD 소스 아님
   schema/testWooTargetBulkApiMaster.xml   배치 1건 로그
   schema/testWooTargetBulkApiDetail.xml   UID 1건 로그. Master 1:N
-  workflow/factory/00_Config.js           [PT] 옵션 → instance.vars. 미완성
-  workflow/factory/01_WorkerDistributor.js [PT] 분배 + PostEvent
-  workflow/factory/02_Polling.js          [PT] Option 폴링 + nextAction
-  workflow/worker/worker.js               [PT] Signal 수신 진입점
-  test/01_SmokeConfig.js ~ 07_...         [PT] 스모크
+  workflow/factory/00_Config.js           FACTORY_CFG + BULK_CFG. 설정 Option 없음
+  workflow/factory/01_WorkerDistributor.js UID 분할 + PostEvent (스모크 계약)
+  workflow/factory/02_Polling.js          {runId}|status[|sent|failed]
+  workflow/worker/worker.js               TBAW1..15 동일. 07과 같은 진입 + sent 보고
+  test/01_SmokeConfig.js ~ 07_...         스모크. 5차 FAIL=0
 ```
 
 | 역할 | Campaign | 코드 | 통신 |
@@ -64,7 +64,7 @@ new_ver/
 
 ---
 
-## 4. Factory 흐름 (프로토타입)
+## 4. Factory 흐름
 
 워크플로우 (화면 기준):
 
@@ -87,17 +87,17 @@ Start
 | `next` | 라운드 완료. 다음 분배 |
 | `finish` | 대상 없음 / 상한 / 워커 0 |
 
-### 4.1 00_Config — 미완성
+### 4.1 00_Config
 
-있는 것: Option 헬퍼(`cfg` / `cfgNum` / `cfgPos` / `cfgBool`), MemberSchema / WorkerCount / BatchSize / RoundLimit / GrandTotal / Enabled.
+설정은 `FACTORY_CFG` + `loadLibrary` 후 `BULK_CFG`. getOption으로 설정을 읽지 않는다.
 
-없는 것 (Distributor·Polling이 읽음):
+조절 지점: `WORKER_COUNT`(5~15), `ROUND_LIMIT`, `GRAND_TOTAL`(첫 테스트 25000), `DRY_RUN`, `ENABLED`.
 
-`OPT_PREFIX`, `CFG_*` 기본값, `PENDING_COND`, `PARTITION_MODE`, `UID_PREFIX`, `UID_DIGITS`, `EXACT_COUNT`, `WORKER_NAME_TPL`, `WORKER_WF_TPL`, `WORKER_SIG_TPL`, `STRICT_RUNID`, `ABORT_ON_WORKER_ERROR`, `MAX_READY_POLL`, `MAX_RUN_POLL`, `Enabled`로 `finish` 처리.
+스키마·배치 크기·CUSTOM_ATTR은 `BULK_CFG`. Option 키는 `WORKER_DONE_TBAWn`.
 
-이 파일만으로는 Factory가 기동하지 않는다. 다음 Phase에서 라이브러리 `BULK_CFG`와 옵션 키를 맞춰 다시 쓴다.
+### 4.2 01_WorkerDistributor
 
-### 4.2 01_WorkerDistributor — 의도
+스모크 03_Fire와 같은 PostEvent 계약. min/max는 SQL, 분할은 arith(기본).
 
 1. 미전송 min/max UID 조회 (`PENDING_COND`).
 2. 없으면 `finish`.
@@ -108,20 +108,19 @@ Start
    - `arith`(권장): UID가 `{prefix}{숫자패딩}`일 때 산술. 조회 2회.
    - `offset`: startLine으로 경계 UID. 워커 수만큼 조회. 공백 UID에 안전.
 7. 워커별 Option: `{runId}|ready` 또는 `{runId}|skip`.
-8. PostEvent vars: `runId`, `workerName`, `uidStart`, `uidEnd`, `batchSize`, `optKey`.
-9. 할당 0이면 `finish`.
+8. PostEvent vars: `runId`, `workerName`, `uidStart`, `uidEnd`, `batchSize`, `optKey`, `dryRun`, `workerCount`(실발사 수), `customAttr`, `authToken`.
+9. 할당 0이거나 워커 WF가 시작됨(11)이 아니면 `skip`. 전원 미발사이면 `finish`.
+10. PostEvent 사이 `STAGGER_POST` ms.
 
-old_ver 대비: skip 워커도 Option을 남긴다. 이전 라운드 `done` 잔존으로 폴링이 끝나는 구멍을 막으려 한 설계다. `runId`를 Option에 넣어 라운드 혼선을 줄인다.
+skip 워커도 Option을 남긴다. 이전 라운드 `done` 잔존으로 폴링이 끝나는 구멍을 막는다.
 
-프로토타입 한계:
+arith는 샘플 UID(`U` + 9자리, 밀도 1) 전제. 비연속이면 `PARTITION=offset`.
 
-- `EXACT=false`면 `roundSize = remaining(상한)`이다. 실제 전송 건수와 다를 수 있다. Polling이 이 값으로 `globalProcessed`를 올려 GrandTotal이 어긋날 수 있다.
-- arith는 샘플 UID 형태(`U` + 9자리 등) 전제. 실제 멤버십 UID가 비연속이면 빈 구간·누락이 난다. 그때는 offset.
-- `dryRun`, `workerCount`, `authToken`, `customAttr`은 PostEvent에 없다. 라이브러리는 받는다.
+워커 WF `TBAWn`이 없으면 skip 로그. 늘릴 때 WF를 먼저 Start 한다.
 
-### 4.3 02_Polling — 의도
+### 4.3 02_Polling
 
-Option 값: `{runId}|{status}` 또는 상태만.
+Option 값: `{runId}|{status}` 또는 `{runId}|done|{sent}|{failed}`.
 
 | status | 동작 |
 |---|---|
@@ -133,34 +132,50 @@ Option 값: `{runId}|{status}` 또는 상태만.
 
 라운드 타임아웃: `pollCount >= MAX_RUN_POLL`.
 
-전원 완료면 `globalProcessed += roundSize`. GrandTotal 도달 시 `finish`, 아니면 `next`.
+전원 완료면 `globalProcessed +=` 워커가 보고한 `sent` 합. GrandTotal 도달 시 `finish`, 아니면 `next`. 상한은 추정 span이 아니라 실제 전송 건수다.
 
-프로토타입 한계: Worker 진입점이 `done`만 쓰고 runId를 안 붙이면, STRICT에서 영원히 stale이 된다. `8.2` 참조.
+### 4.4 동시 워커
+
+워커 WF는 프로세스마다 `this`가 따로 있다. `BULK_CFG`는 읽기 전용.
+
+| 공유 자원 | 안전 장치 |
+|---|---|
+| Sample 행 | UID 닫힌 구간 비중첩. 조회 `>=start <=end`, 커서는 `> lastUid` |
+| apiYn UPDATE | 배치 first~last. 구간이 안 겹치면 행 경합 없음 |
+| Master | `batchName = {workerName}-{runId}-{batchNo}` unique |
+| Detail | `_key=@membershipUid`. 구간 비중첩이면 같은 UID를 두 워커가 안 씀 |
+| Option | 워커당 `WORKER_DONE_TBAWn` 1키 |
+| Target 50콜/분 | `workerCount`로 스로틀. 첫 POST는 `STAGGER_SLOT_MS × (n-1)`. Factory PostEvent도 300ms 간격 |
+
+워커를 늘릴 때: TBAWn 을 Start → `FACTORY_CFG.WORKER_COUNT`를 같은 수로. 15 초과는 양쪽에서 클램프.
 
 ---
 
-## 5. Worker 진입 (프로토타입)
+## 5. Worker 진입 (스모크와 동일 계약)
+
+`test/07_SmokeSignalWorker.js` 와 `workflow/worker/worker.js` 가 같다.
 
 ```
 signalTBAWn
   --> worker.js
         loadLibrary("wootar:testWooBulkApiWorker.js")
-        report("running")
+        report(runId + "|running")
         new BulkApiWorker(vars).run()
-        report("done" | "error")
+        report(runId + "|done" | runId + "|error")
   --> End
 ```
 
-의도된 개선: 예외를 rethrow하지 않는다. 워커 WF가 Error로 멈추면 다음 PostEvent가 큐에만 쌓인다. 실패는 Option `error`로만 알린다.
-
-깨진 계약: `report(status)`가 `running` / `done` / `error`만 쓴다. Distributor는 `{runId}|ready`를 심는다. Polling STRICT는 `{runId}|status`를 기대한다.
-
-다음 Phase Worker 진입점은 최소한 아래를 지켜야 한다.
+예외는 rethrow하지 않는다. 워커 WF가 Error로 멈추면 다음 PostEvent가 큐에만 쌓인다.
 
 ```
 setOption(optKey, runId + "|" + status)
-new BulkApiWorker(vars)   // workerName, uidStart, uidEnd, batchSize, runId, dryRun, workerCount, authToken, customAttr
+  // done 이면 runId|done|sent|failed
+new BulkApiWorker(vars)
+  // workerName, uidStart, uidEnd, batchSize, runId,
+  // dryRun, workerCount, authToken, customAttr, optKey
 ```
+
+설정은 Option이 아니다. 토큰·CUSTOM_ATTR·스키마는 `BULK_CFG` 또는 시그널. Option은 상태 핸드셰이크만.
 
 라이브러리명은 Campaign에 등록된 내부명을 그대로 쓴다. `.js` 포함 여부는 콘솔에서 확인한다.
 
@@ -182,8 +197,8 @@ new BulkApiWorker(vars)   // workerName, uidStart, uidEnd, batchSize, runId, dry
 | `runId` | 선택 | 워커 시각 | 전 워커 동일해야 회차 조회 가능 |
 | `dryRun` | 선택 | false | `"true"`면 POST·apiYn 생략. 조회/CSV/로그는 수행 |
 | `workerCount` | 선택 | 5. 1 미만이면 1 | 스로틀 계산 |
-| `authToken` | 선택 | 빈 값 | Bearer. 없으면 `BULK_CFG.AUTH_TOKEN` → `AUTH_OPTION` |
-| `customAttr` | 선택 | 빈 값 | 추가 컬럼. 없으면 `BULK_CFG.CUSTOM_ATTR` → `CUSTOM_ATTR_OPTION` |
+| `authToken` | 선택 | 빈 값 | Profile API 토큰(Bearer). 없으면 `BULK_CFG.AUTH_TOKEN`. Debugger tools 토큰 아님. 둘 다 비면 헤더 생략 |
+| `customAttr` | 선택 | 빈 값 | 추가 컬럼. 없으면 `BULK_CFG.CUSTOM_ATTR` |
 
 ### 6.2 run() 순서
 
@@ -264,7 +279,7 @@ apiYn: 구간 UPDATE. DRY_RUN이면 생략. SQL은 `N OR NULL`도 갱신(구 데
 
 기본 전송은 항상 `thirdPartyId` + `seg_id`다. 샘플 스키마의 다른 속성(요금제, 전화, 동의, 발송시간 등)을 같이 보내려면 설정을 켠다.
 
-우선순위: 시그널 `customAttr` → `BULK_CFG.CUSTOM_ATTR` → `CUSTOM_ATTR_OPTION`.
+우선순위: 시그널 `customAttr` → `BULK_CFG.CUSTOM_ATTR`. xtk:option은 쓰지 않는다.
 
 허용 형식:
 
@@ -330,7 +345,7 @@ Adobe Campaign 워크플로우 JS는 SpiderMonkey + E4X다. `let` / `const` / �
 - Master/Detail + apiYn
 - DRY_RUN
 - 연속 3 배치 실패 시 워커 중단
-- Bearer 선택 적용 (시그널 / CFG / Option)
+- Bearer 선택 적용 (시그널 / `BULK_CFG.AUTH_TOKEN`)
 - UID `sqlLit`, apiYn N/NULL 조회, segId 255 절단, UID URL-encode
 - POST 직후 batchStatus 짧은 GET → Master 적재 컬럼
 - Master.`runId`
@@ -340,9 +355,9 @@ Adobe Campaign 워크플로우 JS는 SpiderMonkey + E4X다. `let` / `const` / �
 
 1. **적재 완료를 워커가 보장하지 않음.** `POLL_MAX=2`는 스냅샷이다. incomplete는 후속 잡이 재조회해야 한다.
 2. **`loadLibrary` 이름.** 코드는 `wootar:testWooBulkApiWorker.js`. 콘솔 내부명에 `.js`가 없으면 로드 실패다. Factory/Worker Phase에서 맞춘다.
-3. **Worker Option 계약 (진입점).** `worker.js`(PT)가 `done`만 쓰면 STRICT 폴링과 어긋난다.
+3. **Factory는 스모크 계약으로 재작성됨.** PostEvent에 dryRun/workerCount/customAttr/authToken. 폴링은 sent 합. TBAW1..n 캔버스는 Campaign에 올려야 한다.
 4. **동기 HttpClientRequest 타임아웃.** 공식 `execute`의 timeout은 비동기 전용. 동기 기본 대기는 약 5분. async로 바꾸지 않음.
-5. **토큰을 코드/Option에 둘 때 회전.** 재발급 시 `AUTH_TOKEN` / Option을 같이 바꿔야 한다. 값은 로그에 안 남긴다.
+5. **토큰 회전.** 재발급 시 `BULK_CFG.AUTH_TOKEN`(또는 시그널 `authToken`)만 바꾼다. 값은 로그에 안 남긴다.
 
 ### 8.3 효율 — 다음 Phase (라이브러리 밖)
 
@@ -431,32 +446,40 @@ testWooTargetBulkApiMaster (batchName UK)
 
 ---
 
-## 10. Smoke 흐름 (프로토타입)
+## 10. Smoke 흐름 (캔버스는 유지, 역할만 구분)
 
-화면 기준:
+설정은 `01` 상단 스위치 + `BULK_CFG`. 활동 이름·선은 기존과 같다.
 
 ```
 Start
-  --> 01_Config
-  --> 02_Local          (2s)
-  --> 03_Fire           (2s)  PostEvent → TBAWSmokeSignal
+  --> 01_Config         BULK_CFG 검사. SMOKE_REAL_ROWS=2
+  --> 02_Local          스키마 I/O, 분할, 같은 캔버스 dryRun (미전송)
+  --> 03_Fire           pending 2건 PostEvent. dryRun=false
   --> 30s Wait
-  --> 04_Poll
+  --> 04_Poll           {runId}|status  (제출 완료. 적재 완료 아님)
   --> Test
         |-- Working --> 30s Wait --> 04_Poll
         |-- False   --> End Error
         +-- Done
-              --> 05_ApiTest
-              --> 1m Wait
-              --> 06_Verify
+              --> 05_ApiTest     Master batchStatus + Profile Fetch 1건
+              --> 1m Wait        적재 여유
+              --> 06_Verify      apiYn=Y, Fetch 재시도, 로그 삭제
               --> End
 ```
 
-별도 WF `TBAWSmokeSignal`: 항상 시작됨. `07_SmokeSignalWorker.js`가 같은 라이브러리를 dryRun으로 돌린다.
+별도 WF `TBAWSmokeSignal`: 항상 시작됨. `07` = `worker.js`와 같은 진입점. **여기서 샘플 UID를 샌드박스 Target에 실전송한다.**
 
-주의: `07`이 `w.SEG_MIN`을 읽는다. 그 값은 `BULK_CFG`에 있고 인스턴스에 없다. 비교는 항상 통과한다. 죽은 검사다.
+| 활동 | 하는 일 | 안 하는 일 |
+|---|---|---|
+| 02 | 로컬 계약, dryRun Master(`DRYRUN`) | Target POST |
+| 03+07 | 라이브러리 실전송 2건 | 300건, 가짜 SMOKE_TEST_A/B |
+| 04 | 워커 프로세스 종료 | ingest complete 보장 |
+| 05 | 실전송 Master URL GET, Fetch 1 UID, Postman URL 로그 | 새 가짜 프로필 생성 |
+| 06 | apiYn=Y, Fetch 재시도 | Fetch 404를 FAIL로 두지 않음 |
 
-`05`는 가짜 thirdPartyId 2건을 실엔드포인트에 넣는다. `06`은 batchStatus GET + SMOKE 로그 삭제.
+Fetch 404는 공식 적재 지연(최대 24시간)일 수 있다. 제출 성공은 Master `httpCode=200` + `batchStatusUrl`이 `http`로 시작. Target 값은 Postman GET `.../profiles/thirdPartyId/{uid}?client={CLIENT_CODE}` 로 확인.
+
+통과 기준: FAIL=0. 그다음 Factory `00`/`01`/`02`를 이 시그널 계약으로 재작성한다.
 
 ---
 
@@ -470,9 +493,7 @@ Start
 
 다음 Phase에서 할 일:
 
-- `00_Config`를 라이브러리·Option 계약으로 재작성하거나 대체
-- Worker 진입점 Option을 `{runId}|status`로 맞춤
-- Distributor PostEvent에 `workerCount` / `dryRun` / `authToken` / `customAttr` / 실제 sent 보고
+- Campaign에 TBAWFactory + TBAW1..5 를 올리고 GRAND_TOTAL=25000 으로 첫 실전송
+- 워커를 6..15로 늘리며 라운드 소요를 맞춘다. WORKER_COUNT와 Start된 WF 수를 같게
 - incomplete Master 재조회 잡 (선택)
-- Smoke를 기준 라이브러리와 재정렬하거나 삭제
 - Campaign 콘솔에서 라이브러리 내부명(`.js` 여부) 확인 후 `loadLibrary` 맞추기

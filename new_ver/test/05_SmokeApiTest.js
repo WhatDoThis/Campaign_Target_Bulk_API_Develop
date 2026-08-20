@@ -1,8 +1,13 @@
 /* ============================================================================
- * TBAWSmoke / 05_ApiTest — 실 엔드포인트 2건 + 실패 유도 1건
- *   Content-Type / MemoryBuffer 는 워커와 완전히 동일하게 맞춘다.
- *   (여기서만 text/plain 을 쓰면 "테스트는 되는데 본 배치는 안 되는" 상황이 생김)
+ * TBAWSmoke / 05_ApiTest (실전송 결과 조회)
+ * 03→07이 올린 샘플 UID의 Master batchStatus + Profile Fetch.
+ * 가짜 SMOKE_TEST_A/B 는 보내지 않는다. Fetch 404는 적재 지연으로 보고 실패로 두지 않음.
+ *
+ * [Dependencies]
+ * wootar:testWooBulkApiWorker.js, HttpClientRequest, xtk.queryDef
  * ==========================================================================*/
+
+loadLibrary("wootar:testWooBulkApiWorker.js", false);
 
 var PASS  = parseInt(instance.vars.smkPass, 10) || 0;
 var FAIL  = parseInt(instance.vars.smkFail, 10) || 0;
@@ -12,51 +17,144 @@ function ok(n, c, d) {
   else   { FAIL++; FAILS += (FAILS ? ", " : "") + n; logWarning("  [FAIL] " + n + (d ? " :: " + d : "")); }
 }
 
-var URL   = String(instance.vars.smkUrl);
-var runId = String(instance.vars.smkRunId);
+var CLIENT = String(instance.vars.smkClient || "");
+var RUN_ID = String(instance.vars.smkRunId || "");
+var MASTER = "wootar:testWooTargetBulkApiMaster";
+var DETAIL = "wootar:testWooTargetBulkApiDetail";
 instance.vars.smkStatusUrl = "";
+instance.vars.smkFetchUid  = "";
+instance.vars.smkFetchUrl  = "";
 
-function post(body, label) {
-  var buf = new MemoryBuffer();
-  buf.fromString(body, "utf-8");
-  var req = new HttpClientRequest(URL);
-  req.method = "POST";
-  req.header["Content-Type"] = "application/x-www-form-urlencoded";
-  req.body = buf;
-  req.execute();
-  var raw = String(req.response.body || "");
-  logInfo("  [" + label + "] code=" + req.response.code + " body=" + raw.substring(0, 400));
-  var s = raw.indexOf("<batchStatus>"), e = raw.indexOf("</batchStatus>");
-  return { code: req.response.code,
-           success: raw.indexOf("<success>true</success>") >= 0,
-           statusUrl: (s > -1 && e > s) ? raw.substring(s + 13, e) : "",
-           raw: raw };
+function applyAuth(req) {
+  if (typeof BULK_CFG !== "undefined" && BULK_CFG.AUTH_TOKEN) {
+    req.header["Authorization"] = "Bearer " + BULK_CFG.AUTH_TOKEN;
+  }
 }
 
-logInfo("=== T8 Real API ===");
-if (instance.vars.smkTApi !== "1") { logInfo("  [SKIP] 스위치 OFF"); }
-else {
+function xmlTag(body, tag) {
+  var raw = String(body || "");
+  var open = "<" + tag + ">";
+  var a = raw.indexOf(open);
+  var b = raw.indexOf("</" + tag + ">");
+  if (a < 0 || b <= a) return "";
+  return raw.substring(a + open.length, b);
+}
+
+logInfo("=== T8 Real send status / Fetch ===");
+if (instance.vars.smkTApi !== "1") {
+  logInfo("  [SKIP] 스위치 OFF");
+} else {
   try {
-    var body = "batch=thirdPartyId,smokeTest,smokeRunId\n"
-             + "SMOKE_TEST_A," + encodeURIComponent("1") + "," + encodeURIComponent(runId) + "\n"
-             + "SMOKE_TEST_B," + encodeURIComponent("1") + "," + encodeURIComponent(runId) + "\n";
-    var r = post(body, "정상");
-    ok("HTTP 200", r.code === 200, "code=" + r.code);
-    ok("success=true 파싱", r.success === true);
-    ok("batchStatus URL 회수", r.statusUrl !== "", r.statusUrl);
-    ok("batchStatusUrl 255자 이내", r.statusUrl.length <= 255, "len=" + r.statusUrl.length);
-    instance.vars.smkStatusUrl = r.statusUrl;
-  } catch (e) { ok("T8 Real API", false, e.toString()); }
+    var mq = xtk.queryDef.create(
+      <queryDef schema={MASTER} operation="select" lineCount="5">
+        <select>
+          <node expr="@batchName"/><node expr="@batchStatusUrl"/>
+          <node expr="@httpCode"/><node expr="@success"/><node expr="@recordCount"/>
+        </select>
+        <where>
+          <condition expr={"@workerName = 'SMOKE' AND @success = 1 AND @batchName LIKE 'SMOKE-"
+            + RUN_ID + "-%' AND @batchName NOT LIKE '%-M1'"}/>
+        </where>
+      </queryDef>
+    ).ExecuteQuery();
+
+    var batchName = "", statusUrl = "", httpCode = "", recCnt = "";
+    for each (var m in mq.testWooTargetBulkApiMaster) {
+      batchName = String(m.@batchName);
+      statusUrl = String(m.@batchStatusUrl);
+      httpCode  = String(m.@httpCode);
+      recCnt    = String(m.@recordCount);
+      break;
+    }
+
+    ok("실전송 Master 존재", batchName !== "", "batchName=" + batchName);
+    ok("httpCode 200", httpCode === "200", "httpCode=" + httpCode);
+    ok("batchStatusUrl 이 실 URL", statusUrl.indexOf("http") === 0,
+       statusUrl || "(없음)");
+    instance.vars.smkStatusUrl = statusUrl;
+
+    if (statusUrl.indexOf("http") === 0) {
+      var req = new HttpClientRequest(
+        statusUrl + (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "showDetails=true");
+      req.method = "GET";
+      applyAuth(req);
+      req.execute();
+      var raw = String(req.response.body || "");
+      logInfo("  batchStatus code=" + req.response.code + " body=" + raw.substring(0, 500));
+      var st = xmlTag(raw, "status");
+      ok("batchStatus HTTP 200", req.response.code === 200, "code=" + req.response.code);
+      ok("batchStatus complete|incomplete", st === "complete" || st === "incomplete",
+         "status=" + st + " recordCount=" + recCnt);
+    }
+
+    var dq = xtk.queryDef.create(
+      <queryDef schema={DETAIL} operation="select" lineCount="5">
+        <select><node expr="@membershipUid"/><node expr="@segId"/></select>
+        <where>
+          <condition expr={"[master/@workerName] = 'SMOKE' AND [master/@batchName] LIKE 'SMOKE-"
+            + RUN_ID + "-%' AND [master/@batchName] NOT LIKE '%-M1'"}/>
+        </where>
+      </queryDef>
+    ).ExecuteQuery();
+
+    var fetchUid = "", expectSeg = "";
+    for each (var d in dq.testWooTargetBulkApiDetail) {
+      fetchUid  = String(d.@membershipUid);
+      expectSeg = String(d.@segId);
+      break;
+    }
+    instance.vars.smkFetchUid = fetchUid;
+    instance.vars.smkExpectSeg = expectSeg;
+
+    if (!fetchUid) {
+      ok("실전송 Detail UID", false, "Detail 없음");
+    } else {
+      var fetchUrl = "https://" + CLIENT + ".tt.omtrdc.net/rest/v1/profiles/thirdPartyId/"
+                   + encodeURIComponent(fetchUid) + "?client=" + encodeURIComponent(CLIENT);
+      instance.vars.smkFetchUrl = fetchUrl;
+      logInfo("  Postman Fetch GET " + fetchUrl);
+      logInfo("  기대 profile.seg_id = " + expectSeg
+        + (instance.vars.smkCustom ? " / CUSTOM_ATTR=" + instance.vars.smkCustom : ""));
+
+      var freq = new HttpClientRequest(fetchUrl);
+      freq.method = "GET";
+      applyAuth(freq);
+      freq.execute();
+      var fbody = String(freq.response.body || "");
+      logInfo("  Fetch code=" + freq.response.code + " body=" + fbody.substring(0, 500));
+
+      if (freq.response.code === 200 && fbody.indexOf("profileAttributes") >= 0) {
+        ok("Profile Fetch 200", true, "uid=" + fetchUid);
+        if (expectSeg) {
+          var hasSeg = fbody.indexOf(expectSeg) >= 0;
+          if (hasSeg) ok("Fetch seg_id 일치", true, expectSeg);
+          else logInfo("  [INFO] Fetch 본문에 seg_id 아직 없음 — 1m 후 06·Postman 재조회");
+        }
+      } else if (freq.response.code === 404) {
+        logInfo("  [INFO] Fetch 404 = 적재 전 가능(최대 24시간). 실패로 두지 않음. Postman으로 재조회: " + fetchUrl);
+      } else {
+        ok("Profile Fetch", false, "code=" + freq.response.code);
+      }
+    }
+  } catch (e) { ok("T8 Real send 조회", false, e.toString()); }
 }
 
 logInfo("=== T9 Negative ===");
 if (instance.vars.smkTNeg !== "1") { logInfo("  [SKIP] 스위치 OFF"); }
 else {
   try {
-    // batch= 프리픽스 누락. Target의 실제 반응을 기록하는 것이 목적이다.
-    var r2 = post("thirdPartyId,smokeTest\nSMOKE_TEST_C,1\n", "실패유도");
-    ok("에러 응답 감지", r2.success === false,
-       "code=" + r2.code + " success=" + r2.success + " ← 워커 판정 로직 튜닝 근거");
+    var URL = String(instance.vars.smkUrl);
+    var buf = new MemoryBuffer();
+    buf.fromString("thirdPartyId,smokeTest\nSMOKE_TEST_C,1\n", "utf-8");
+    var nreq = new HttpClientRequest(URL);
+    nreq.method = "POST";
+    nreq.header["Content-Type"] = "application/x-www-form-urlencoded";
+    applyAuth(nreq);
+    nreq.body = buf;
+    nreq.execute();
+    var nraw = String(nreq.response.body || "");
+    var nOk = nraw.indexOf("<success>true</success>") < 0;
+    ok("에러 응답 감지", nOk, "code=" + nreq.response.code);
   } catch (e) { ok("T9 에러 경로", true, "예외로 처리됨: " + e.toString()); }
 }
 

@@ -1,14 +1,15 @@
 /* ============================================================================
- * TBAWSmoke / 03_Fire
- * 별도 워크플로우(TBAWSmokeSignal)의 sigWorker 활동으로 이벤트를 발사한다.
+ * TBAWSmoke / 03_Fire (시그널 발사)
+ * TBAWSmokeSignal 의 sigWorker 로 PostEvent. dryRun=false, pending 소수 실전송.
  *
- * [주의] PostEvent는 비동기이며, 대상 WF가 '시작됨' 상태가 아니면
- *        예외 없이 로그에만 에러를 남긴다. 사전에 상태를 검증한다.
- *        complete 인자는 반드시 false — true면 대상이 완료 상태로 전환되어
- *        다음 회차에 시그널을 받지 못한다.
+ * [주의] 대상 WF가 '시작됨'(state=20)이 아니면 예외 없이 로그만 남는다.
+ *        complete 인자는 false. true면 대상이 완료되어 다음 시그널을 못 받는다.
+ *
+ * [Dependencies]
+ * xtk.workflow.PostEvent, xtk.queryDef, setOption(상태 {runId}|status 만)
  * ==========================================================================*/
 
-logInfo("=== T7 Signal Dispatch === (진입)");   // ★ 무조건 첫 줄에 찍는다
+logInfo("=== T7 Signal Dispatch ===");
 
 var PASS  = parseInt(instance.vars.smkPass, 10) || 0;
 var FAIL  = parseInt(instance.vars.smkFail, 10) || 0;
@@ -21,18 +22,19 @@ function ok(n, c, d) {
 var SIG_WF  = String(instance.vars.smkSigWf || "");
 var SIG_ACT = String(instance.vars.smkSigAct || "");
 var OPT_KEY = String(instance.vars.smkOptKey || "");
+var RUN_ID  = String(instance.vars.smkRunId || "");
 logInfo("  대상 WF=" + SIG_WF + " / 활동=" + SIG_ACT + " / 옵션키=" + OPT_KEY);
+
+function mark(st) {
+  try { setOption(OPT_KEY, RUN_ID + "|" + st, "smoke worker status"); } catch (e) {}
+}
 
 if (instance.vars.smkTSignal !== "1") {
   logInfo("  [SKIP] T7 :: 스위치 OFF");
-  setOption(OPT_KEY, "skip", "smoke worker status");
+  mark("skip");
 } else {
   var canFire = false;
 
-  /* --- 대상 워크플로우 상태 사전 검증 ---------------------------------
-   * @state 상수는 인스턴스/버전에 따라 다를 수 있으므로
-   * 실패 시 후보 워크플로우 목록을 함께 출력해 값을 눈으로 확인한다.
-   * ------------------------------------------------------------------*/
   try {
     var wf = xtk.queryDef.create(
       <queryDef schema="xtk:workflow" operation="getIfExists">
@@ -45,12 +47,14 @@ if (instance.vars.smkTSignal !== "1") {
     var wfState = parseInt(wf.@state, 10);
     if (isNaN(wfState)) wfState = -1;
 
+    // 공식 감독 예: state 13=pause, 20=stop. 시작됨은 11
+    // https://experienceleague.adobe.com/en/docs/campaign/automation/workflows/use-cases/monitoring/workflow-supervision
+    var started = (wfState === 11);
     ok("시그널 WF 존재", wfId > 0, SIG_WF + " (id=" + wfId + ", label=" + wf.@label + ")");
-    ok("시그널 WF 시작됨", wfState === 20,
-       "state=" + wfState + (wfState !== 20 ? " ← TBAWSmokeSignal 을 '시작' 할 것" : ""));
-    canFire = (wfId > 0 && wfState === 20);
+    ok("시그널 WF 시작됨", started,
+       "state=" + wfState + (started ? " (started)" : " ← 11=started, 13=pause, 20=stop. TBAWSmokeSignal 을 Start"));
+    canFire = (wfId > 0 && started);
 
-    // 못 찾았으면 내부명 오타 진단을 위해 유사 목록 출력
     if (wfId === 0) {
       var lst = xtk.queryDef.create(
         <queryDef schema="xtk:workflow" operation="select" lineCount="20">
@@ -66,37 +70,59 @@ if (instance.vars.smkTSignal !== "1") {
   }
 
   if (!canFire) {
-    setOption(OPT_KEY, "error", "smoke worker status");
-    logWarning("  발사 생략 — 대상 워크플로우가 수신 가능 상태가 아님");
+    mark("skip");
+    logWarning("  발사 생략 — 대상 워크플로우가 시작됨(state=11)이 아님");
   } else {
     try {
-      var UIDP = String(instance.vars.smkUidPrefix);
-      var UIDD = parseInt(instance.vars.smkUidDigits, 10) || 9;
-      function pad(n) { var s = String(n); while (s.length < UIDD) s = "0" + s; return UIDP + s; }
+      var SCHEMA  = String(instance.vars.smkSchema);
+      var ELEMENT = String(instance.vars.smkElement);
+      var PENDING = String(instance.vars.smkPending);
+      var realN   = parseInt(instance.vars.smkRealRows, 10) || 2;
 
-      var minUid = String(instance.vars.smkMinUid || pad(1));
-      var s0  = parseInt(minUid.substring(UIDP.length), 10) || 1;
-      var lim = parseInt(instance.vars.smkLimit, 10) || 300;
+      var qr = xtk.queryDef.create(
+        <queryDef schema={SCHEMA} operation="select" lineCount={String(realN)}>
+          <select><node expr="@membershipUid"/></select>
+          <where><condition expr={PENDING}/></where>
+          <orderBy><node expr="@membershipUid" sortDesc="false"/></orderBy>
+        </queryDef>
+      ).ExecuteQuery();
 
-      var params = <variables
-          workerName="SMOKE"
-          uidStart={pad(s0)}
-          uidEnd={pad(s0 + lim - 1)}
-          runId={String(instance.vars.smkRunId)}
-          optKey={OPT_KEY}
-          batchSize={String(instance.vars.smkBatch)}
-          dryRun="true"/>;
+      var uids = [];
+      for each (var row in qr[ELEMENT]) uids.push(String(row.@membershipUid));
+      ok("실전송 대상 pending", uids.length > 0, "n=" + uids.length + " / 요청=" + realN);
 
-      logInfo("  발사 파라미터: " + params.toXMLString());
-      setOption(OPT_KEY, "ready", "smoke worker status");
+      if (uids.length === 0) {
+        mark("skip");
+      } else {
+        var uidStart = uids[0];
+        var uidEnd   = uids[uids.length - 1];
+        instance.vars.smkRealStart = uidStart;
+        instance.vars.smkRealEnd   = uidEnd;
+        instance.vars.smkRealCount = uids.length;
 
-      xtk.workflow.PostEvent(SIG_WF, SIG_ACT, "", params, false);
+        var params = <variables
+            workerName="SMOKE"
+            uidStart={uidStart}
+            uidEnd={uidEnd}
+            runId={RUN_ID}
+            optKey={OPT_KEY}
+            batchSize={String(uids.length)}
+            dryRun="false"
+            workerCount="1"
+            customAttr={String(instance.vars.smkCustom || "")}
+            authToken=""/>;
 
-      ok("PostEvent 발사", true,
-         SIG_WF + "/" + SIG_ACT + " " + pad(s0) + " ~ " + pad(s0 + lim - 1));
+        logInfo("  실전송 발사: " + uidStart + " ~ " + uidEnd + " (" + uids.length + "건)");
+        logInfo("  발사 파라미터: " + params.toXMLString());
+        mark("ready");
+        xtk.workflow.PostEvent(SIG_WF, SIG_ACT, "", params, false);
+
+        ok("PostEvent 실전송 발사", true,
+           SIG_WF + "/" + SIG_ACT + " " + uidStart + " ~ " + uidEnd);
+      }
     } catch (e) {
       ok("PostEvent 발사", false, e.toString());
-      setOption(OPT_KEY, "error", "smoke worker status");
+      mark("error");
     }
   }
 }

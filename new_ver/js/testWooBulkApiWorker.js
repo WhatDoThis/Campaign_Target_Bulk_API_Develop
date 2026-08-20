@@ -1,20 +1,22 @@
 // ============================================================
 // wootar:testWooBulkApiWorker.js (Target Bulk Profile 전송 워커)
 // ------------------------------------------------------------
-// Adobe Target Bulk Profile Update API v2. 워커 WF N개가 loadLibrary로 공유.
+// Adobe Target Bulk Profile Update API v2. 워커 WF N개(최대 15)가 loadLibrary로 공유.
 // 기본 전송은 thirdPartyId + seg_id. CUSTOM_ATTR로 샘플 스키마 속성을 가변 추가.
+// 인스턴스 상태는 this. 스로틀은 workerCount + 첫 호출 워커별 분산.
 //
 // [Main Functions]
 // 1. queryMembers — apiYn N/NULL + UID 커서. CUSTOM_ATTR은 select node 추가
 // 2. buildPayload — batch=thirdPartyId,seg_id[,attr...]. 값은 URL-encode
-// 3. callBulkApi — POST v2 + 스로틀 + 429/503 재시도
+// 3. callBulkApi — POST v2 + 스로틀(첫 호출 워커별 분산) + 429/503 재시도
 // 4. pollBatchStatus — POST 직후 짧은 GET. 적재 완료 대기는 하지 않음
 // 5. saveMaster / saveToDb / updateApiYn — 제출 로그. 추가 속성은 Detail에 안 남김
 // 6. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
 //
 // [Dependencies]
-// xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer, getOption
+// xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer
 // [참조] https://experienceleague.adobe.com/en/docs/target-dev/developer/api/profile-apis/profile-bulk-api
+//        https://experienceleague.adobe.com/en/docs/target-dev/developer/implementation/methods/profile-api-settings
 // ============================================================
 
 
@@ -22,13 +24,23 @@
 // 환경 설정 — 변경 지점 일원화
 //   BULK_ 접두어: loadLibrary는 호출부와 동일 스코프에 로드됨.
 //                 CFG 같은 흔한 이름은 워크플로우 변수와 충돌 위험
+//   xtk:option(getOption/setOption)은 쓰지 않음. 값은 여기 또는 시그널(vars)
 // ============================================================
 var BULK_CFG = {
 
     // ---- Target 연동 ----
-    CLIENT_CODE : "ibankapacpartnersand",   // Target Administration > 클라이언트 코드
-    AUTH_TOKEN  : "",                       // 비우면 헤더 생략. UI Require Authentication on일 때 필수
-    AUTH_OPTION : "",                       // 예: "testWooTarBulkAuthToken". 비우면 Option 조회 안 함
+    //   둘 다 Administration > Implementation 같은 페이지. 구역이 다름
+    CLIENT_CODE : "ibankapacpartnersand",   // Account Details 의 Client Code
+    // HttpClientRequest 는 serverConf.xml urlPermission 허용 목록만 호출한다.
+    //   dnsSuffix="tt.omtrdc.net" 없으면 JST-310026. 변경 후 nlserver 재시작
+    //   POST batchUpdate 와 GET profiles/thirdPartyId, batchStatus(mboxedge) 모두 해당
+    // AUTH_TOKEN = Profile API 구역 토큰.
+    //   1) Profile API > Require Authentication 을 ON
+    //   2) Generate New Profile Authentication Token
+    //   3) 헤더 Authorization: Bearer {이 값}
+    //   OFF면 비움 (헤더 생략). 재발급 시 이전 값으로 호출하면 실패
+    //   공식: /docs/target-dev/developer/implementation/methods/profile-api-settings
+    AUTH_TOKEN  : "",
 
 
     // ---- 처리 규모 ----
@@ -39,11 +51,10 @@ var BULK_CFG = {
     //   기본 전송: thirdPartyId + seg_id
     //   비어 있으면 추가 컬럼 없음
     //   예: "@planName, @phoneNumber"  또는  '["@planName","@phoneNumber"]'
-    //   시그널 customAttr > 여기 값 > CUSTOM_ATTR_OPTION
+    //   시그널 customAttr > 여기 값
     //   스키마에 없는 이름은 조회 시 예외. 오디언스는 profile.planName 등으로 사용
-    CUSTOM_ATTR        : "",
-    CUSTOM_ATTR_OPTION : "",                // 예: "testWooTarBulkCustomAttr". 비우면 Option 조회 안 함
-    EXTRA_VAL_MAX      : 256,               // 속성값 절단. in-mbox profile value 한도에 맞춤
+    CUSTOM_ATTR   : "",
+    EXTRA_VAL_MAX : 256,                    // 속성값 절단. in-mbox profile value 한도에 맞춤
 
 
     // ---- 대상 스키마 ----
@@ -88,7 +99,9 @@ var BULK_CFG = {
     //   https://experienceleague.adobe.com/en/docs/target/using/troubleshoot/target-limits
     ACCOUNT_CPM    : 50,        // 계정 분당 콜 한도 (Adobe 고정값)
     WORKER_COUNT   : 5,         // 동시 가동 워커 수 기본값. 시그널 workerCount 우선
+    WORKER_MAX     : 15,        // 최대 15. Factory가 이 값으로 클램프
     SAFETY_RATIO   : 0.7,       // 안전 마진. 타 팀 Admin/Reporting API 사용분 고려
+    STAGGER_SLOT_MS: 1200,      // 워커 첫 POST 분산. 50콜/분 = 1.2s/콜. TBAW1=0, TBAW2=1.2s ...
 
 
     // ---- Target 규격 상한 ----
@@ -123,10 +136,10 @@ function BulkApiWorker(p) {
   this.bulkApiUrl = "https://" + BULK_CFG.CLIENT_CODE
     + ".tt.omtrdc.net/m2/" + BULK_CFG.CLIENT_CODE + "/v2/profile/batchUpdate";
 
-  // 토큰: 시그널 > BULK_CFG.AUTH_TOKEN > AUTH_OPTION. 모두 비면 헤더 생략
+  // 토큰: 시그널 authToken > BULK_CFG.AUTH_TOKEN (Profile API 토큰). 둘 다 비면 헤더 생략
   this.authToken = this.resolveAuthToken(p);
 
-  // 추가 속성: 시그널 customAttr > CUSTOM_ATTR > CUSTOM_ATTR_OPTION
+  // 추가 속성: 시그널 customAttr > BULK_CFG.CUSTOM_ATTR
   this.customAttrs = this.parseCustomAttrs(this.resolveCustomAttrRaw(p));
 
   if (this.uidStart === "" || this.uidEnd === "") {
@@ -138,9 +151,20 @@ function BulkApiWorker(p) {
   }
 
   // 스로틀 간격 = 60초 / (계정한도 × 안전마진 / 워커수)
-  //   워커 5개 기준 약 8,572ms
+  //   워커 5개 기준 약 8,572ms. 15개면 약 25,715ms
   var workerCount = parseInt(p.workerCount, 10) || BULK_CFG.WORKER_COUNT;
   if (workerCount < 1) workerCount = 1;
+  var wmax = parseInt(BULK_CFG.WORKER_MAX, 10) || 15;
+  if (workerCount > wmax) {
+    logWarning("[" + this.workerName + "] workerCount " + workerCount
+      + " > WORKER_MAX " + wmax + " → 스로틀을 " + wmax + " 기준으로 계산");
+    workerCount = wmax;
+  }
+  this.workerCount = workerCount;
+  this.workerIndex = 0;
+  var nm = String(this.workerName || "").match(/([0-9]+)$/);
+  if (nm) this.workerIndex = parseInt(nm[1], 10) || 0;
+
   var perWorkerCpm = (BULK_CFG.ACCOUNT_CPM * BULK_CFG.SAFETY_RATIO) / workerCount;
   // 설정 오타로 0이 되면 60000/0 → Infinity → sleep 무한 대기
   if (!(perWorkerCpm > 0)) perWorkerCpm = 1;
@@ -155,20 +179,7 @@ function BulkApiWorker(p) {
 BulkApiWorker.prototype.resolveAuthToken = function(p) {
   var t = String((p && p.authToken) || "").replace(/^\s+|\s+$/g, "");
   if (t) return t;
-
-  t = String(BULK_CFG.AUTH_TOKEN || "").replace(/^\s+|\s+$/g, "");
-  if (t) return t;
-
-  if (!BULK_CFG.AUTH_OPTION) return "";
-  try {
-    var ov = getOption(BULK_CFG.AUTH_OPTION, false);
-    if (ov !== undefined && ov !== null) {
-      return String(ov).replace(/^\s+|\s+$/g, "");
-    }
-  } catch (e) {
-    logWarning("[" + this.workerName + "] AUTH_OPTION 조회 실패: " + e.message);
-  }
-  return "";
+  return String(BULK_CFG.AUTH_TOKEN || "").replace(/^\s+|\s+$/g, "");
 };
 
 
@@ -176,20 +187,7 @@ BulkApiWorker.prototype.resolveAuthToken = function(p) {
 BulkApiWorker.prototype.resolveCustomAttrRaw = function(p) {
   var t = String((p && p.customAttr) || "").replace(/^\s+|\s+$/g, "");
   if (t) return t;
-
-  t = String(BULK_CFG.CUSTOM_ATTR || "").replace(/^\s+|\s+$/g, "");
-  if (t) return t;
-
-  if (!BULK_CFG.CUSTOM_ATTR_OPTION) return "";
-  try {
-    var ov = getOption(BULK_CFG.CUSTOM_ATTR_OPTION, false);
-    if (ov !== undefined && ov !== null) {
-      return String(ov).replace(/^\s+|\s+$/g, "");
-    }
-  } catch (e) {
-    logWarning("[" + this.workerName + "] CUSTOM_ATTR_OPTION 조회 실패: " + e.message);
-  }
-  return "";
+  return String(BULK_CFG.CUSTOM_ATTR || "").replace(/^\s+|\s+$/g, "");
 };
 
 
@@ -270,6 +268,16 @@ BulkApiWorker.prototype.clipExtra = function(val) {
     return s.substring(0, BULK_CFG.EXTRA_VAL_MAX);
   }
   return s;
+};
+
+
+// --- ACC 예외 문구. JST-310026 등은 message 가 비어 있고 toString 에만 있음 ---
+BulkApiWorker.prototype.errText = function(e) {
+  if (e === undefined || e === null) return "";
+  var m = "";
+  try { m = String(e.message || ""); } catch (x) { m = ""; }
+  if (m && m !== "undefined") return m;
+  return String(e);
 };
 
 
@@ -429,26 +437,39 @@ BulkApiWorker.prototype.buildPayload = function(batchRecords) {
 //   직전 호출로부터 MIN_INTERVAL_MS 미경과 시 잔여 시간만큼 대기
 //   조회/Detail 저장이 간격보다 오래 걸리면 no-op → 느린 구간엔 부하 없음
 //   재시도·batchStatus GET 포함 매 HTTP 호출 직전 적용
+//   첫 호출: 워커 번호 × STAGGER_SLOT_MS. 동시 기동 시 POST 폭주 방지
 // ============================================================
 BulkApiWorker.prototype.throttle = function() {
   var now = new Date().getTime();
 
-  if (this.MIN_INTERVAL_MS <= 0 || this.lastCallMs === 0) {
-    this.lastCallMs = now;   // 첫 호출은 대기 없음
+  if (this.MIN_INTERVAL_MS <= 0) {
+    this.lastCallMs = now;
     return 0;
   }
 
+  if (this.lastCallMs === 0) {
+    var slot = parseInt(BULK_CFG.STAGGER_SLOT_MS, 10) || 1200;
+    var idx  = this.workerIndex || 0;
+    var wait = (idx > 1) ? ((idx - 1) * slot) : 0;
+    if (wait > 0) {
+      logInfo("[" + this.workerName + "] 첫 호출 분산 " + wait + "ms (워커#" + idx + ")");
+      sleep(wait);
+    }
+    this.lastCallMs = new Date().getTime();
+    return wait;
+  }
+
   var gap = now - this.lastCallMs;
-  var wait = 0;
+  var wait2 = 0;
 
   if (gap < this.MIN_INTERVAL_MS) {
-    wait = this.MIN_INTERVAL_MS - gap;
-    logInfo("[" + this.workerName + "] 스로틀 " + wait + "ms 대기");
-    sleep(wait);
+    wait2 = this.MIN_INTERVAL_MS - gap;
+    logInfo("[" + this.workerName + "] 스로틀 " + wait2 + "ms 대기");
+    sleep(wait2);
   }
 
   this.lastCallMs = new Date().getTime();
-  return wait;
+  return wait2;
 };
 
 
@@ -765,6 +786,7 @@ BulkApiWorker.prototype.run = function() {
   logInfo("[" + this.workerName + "] 시작: " + this.uidStart + " ~ " + this.uidEnd
     + " / batch " + this.BATCH_SIZE
     + " / 스로틀 " + this.MIN_INTERVAL_MS + "ms"
+    + " / workers=" + this.workerCount
     + " / auth=" + (this.authToken ? "on" : "off")
     + " / custom=" + (this.customAttrs.length ? this.customAttrs.join(",") : "(none)")
     + (this.DRY_RUN ? " / ※DRY_RUN※" : ""));
@@ -849,11 +871,12 @@ BulkApiWorker.prototype.run = function() {
 
     } catch (e) {
       totalFailed += count;
-      logWarning("[" + this.workerName + "] #" + batchNo + " 배치 실패: " + e.message);
+      var err = this.errText(e);
+      logWarning("[" + this.workerName + "] #" + batchNo + " 배치 실패: " + err);
 
       // 에러 메시지에서 HTTP 코드 역추출. 미검출 시 0 (DB 오류 등 비HTTP 원인)
       var failCode = 0;
-      var codeMatch = String(e.message).match(/HTTP (\d+)/);
+      var codeMatch = String(err).match(/HTTP (\d+)/);
       if (codeMatch) failCode = parseInt(codeMatch[1], 10);
 
       // 실패도 Master 기록. Detail 미저장 + apiYn='N' 유지 → 다음 라운드 재처리
@@ -867,11 +890,11 @@ BulkApiWorker.prototype.run = function() {
           attemptCount:   this.lastAttempt,   // 실제 시도 횟수 (4xx는 1회)
           elapsedMs:      0,
           batchStatusUrl: "",
-          errorMessage:   String(e.message)
+          errorMessage:   err
         });
       } catch (e2) {
         // Master 기록 실패 = DB 자체 이상. 로그만 남기고 루프 유지
-        logError("[" + this.workerName + "] 실패 Master 기록 불가: " + e2.message);
+        logError("[" + this.workerName + "] 실패 Master 기록 불가: " + this.errText(e2));
       }
 
       errorCount++;
@@ -887,6 +910,11 @@ BulkApiWorker.prototype.run = function() {
 
   logInfo("[" + this.workerName + "] 완료 — 성공 " + totalProcessed
     + "건 / 실패 " + totalFailed + "건 / 배치 " + batchNo + "회");
+
+  if (totalProcessed === 0 && totalFailed > 0) {
+    throw new Error("[" + this.workerName + "] 전 건 실패 " + totalFailed
+      + "건. Campaign urlPermission(serverConf.xml) 또는 네트워크 확인");
+  }
 
   return { sent: totalProcessed, failed: totalFailed, batches: batchNo };
 };

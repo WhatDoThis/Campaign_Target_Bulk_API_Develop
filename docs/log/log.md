@@ -2,6 +2,20 @@
 
 ## Log Index
 
+24. 2026-08-20 GitHub Develop 리모트 동기화
+23. 2026-08-20 워커 상한을 15로 변경
+22. 2026-08-20 Factory/Worker 주석·가드레일 보강
+21. 2026-08-20 Factory 운영 구현과 동시 워커 스로틀
+20. 2026-08-20 T3 링크를 [@master-id]와 [master/@id] 둘 다 확인
+19. 2026-08-20 T3 링크 조회를 [@master-id]로 교정
+18. 2026-08-20 T3 Detail→Master 링크 판정을 SQL로 교정
+17. 2026-08-20 urlPermission 차단 시 done 오보고 수정
+16. 2026-08-19 2차 스모크 T3 링크·Test 분기 수정
+15. 2026-08-19 1차 스모크 로그 원인 수정
+14. 2026-08-19 기본 스모크에 샘플 UID 소수 실전송
+13. 2026-08-19 스모크를 라이브러리 계약으로 재작성
+12. 2026-08-19 AUTH_TOKEN을 Profile API UI 경로로 명시
+11. 2026-08-19 라이브러리 xtk:option 조회 제거
 10. 2026-08-19 GitHub Develop 리모트 최초 푸시
 9. 2026-08-19 Profile API 가이드에 가드레일 명시
 8. 2026-08-19 CUSTOM_ATTR 가변 프로필 컬럼
@@ -14,6 +28,122 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+24. 2026-08-20 GitHub Develop 리모트 동기화
+Purpose: 최초 푸시 이후 스모크·Factory·가드레일 변경을 origin/main에 올린다.
+Changes:
+
+- 스모크 01~07을 라이브러리 계약으로 재작성. T3 링크·실전송·Verify 경로 수정
+- Factory 운영 구현, 동시 워커 스로틀, WORKER_MAX=15, urlPermission/인증 가이드
+Changed files: docs/log/log.md, docs/main/01_ProfileApiDataIntegration.md, new_ver/docs/newLogic.md, new_ver/js/testWooBulkApiWorker.js, new_ver/test/*.js, new_ver/workflow/**
+
+23. 2026-08-20 워커 상한을 15로 변경
+Purpose: 동시 워커 클램프를 14(15 미만)에서 15로 올려 TBAW15까지 운영할 수 있게 한다.
+Changes:
+
+- FACTORY_CFG.WORKER_MAX 와 BULK_CFG.WORKER_MAX 를 15. 폴백도 15
+- 스로틀 주석 15개 ≈25.7초. worker.js / newLogic 상한 문구 맞춤
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/worker/worker.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+22. 2026-08-20 Factory/Worker 주석·가드레일 보강
+Purpose: 00_Config 변수 용도와 가드레일을 스모크 01_Config 수준으로 명시하고, workflow 전 파일에 기능별 주석을 넣는다.
+Changes:
+
+- 00: F1~F7 그룹. 워커 수·50콜/분·물량 상한·UID 형식·Option STRICT 를 변수마다 표시
+- 01/02/worker: SQL 폴백, arith 닫힌 구간, state=11, fireN 스로틀, Option 파싱, 전 건 실패→error
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/workflow/worker/worker.js, docs/log/log.md
+
+21. 2026-08-20 Factory 운영 구현과 동시 워커 스로틀
+Purpose: 5차 스모크 FAIL=0 이후 Factory를 스모크 시그널 계약으로 재작성하고, 워커 5~14 동시 기동 시 Target 50콜/분 폭주를 막는다.
+Changes:
+
+- 00/01/02: FACTORY_CFG만 설정. PostEvent에 dryRun/workerCount/customAttr. 폴링은 sent 합
+- 라이브러리: WORKER_MAX=14, 첫 POST는 STAGGER_SLOT_MS×(n-1). worker.js는 done|sent|failed
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/workflow/worker/worker.js, new_ver/js/testWooBulkApiWorker.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+20. 2026-08-20 T3 링크를 [@master-id]와 [master/@id] 둘 다 확인
+Purpose: configure list에서 FK(@master-id)와 조인 PK(master/@id)가 같은 값임이 확인됐다. T3가 둘을 같이 읽고 일치하는지 본다.
+Changes:
+
+- select에 [@master-id] alias=@masterFk, [master/@id] alias=@masterPk, [master/@batchName] 유지
+- 링크 PASS 조건: 어느 한쪽이 masterId이거나 batchName 일치, 그리고 두 id가 동시에 있으면 서로 같음
+Changed files: new_ver/test/02_SmokeLocal.js, docs/log/log.md
+
+19. 2026-08-20 T3 링크 조회를 [@master-id]로 교정
+Purpose: 콘솔 Detail 스키마 FK xpath가 [@master-id] 임을 확인했고, T3가 [master/@id] 조인으로 읽고 있었다.
+Changes:
+
+- queryDef select를 [@master-id] alias=@masterFk 로 변경. E4X는 d.@master-id 를 빼기로 파싱하므로 alias 필수
+- SQL imasterid 폴백 제거. 조인 batchName 은 보조
+Changed files: new_ver/test/02_SmokeLocal.js, docs/log/log.md
+
+18. 2026-08-20 T3 Detail→Master 링크 판정을 SQL로 교정
+Purpose: 4차 스모크에서 Bulk/Fetch는 성공인데 T3가 조인 XML을 E4X로 잘못 읽어 FAIL=1이 되고 Verify가 Factory 제작 금지를 던졌다.
+Changes:
+
+- Detail 쓰기를 라이브러리와 같이 collection 루트로 맞춤. SMK0000001 잔여 행 삭제 후 삽입
+- 링크 확인은 imasterid SQL과 [master/@id] alias. 실패 시에만 XML 덤프
+Changed files: new_ver/test/02_SmokeLocal.js, docs/log/log.md
+
+17. 2026-08-20 urlPermission 차단 시 done 오보고 수정
+Purpose: Campaign이 tt.omtrdc.net 을 막으면 POST가 실패하는데 워커가 done을 남겨 Fetch 404와 혼동된다.
+Changes:
+
+- JST-310026 등 message 없는 예외는 errText로 기록. 전 건 실패 시 throw → error
+- 가이드에 serverConf.xml urlPermission 허용과 nlserver 재시작을 명시
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/test/07_SmokeSignalWorker.js, new_ver/workflow/worker/worker.js, docs/main/01_ProfileApiDataIntegration.md, docs/log/log.md
+
+16. 2026-08-19 2차 스모크 T3 링크·Test 분기 수정
+Purpose: Detail 링크 판정이 빈 @batchName을 봐 FAIL=1이 되고, Test가 05/06으로 안 가는 경로를 막는다.
+Changes:
+
+- T3 링크는 master-id / master.batchName / alias 로 판정
+- 04는 smkNext와 nextAction을 같이 세팅. 워커 로그는 TBAWSmokeSignal 저널
+Changed files: new_ver/test/02_SmokeLocal.js, new_ver/test/04_SmokePolling.js, docs/log/log.md
+
+15. 2026-08-19 1차 스모크 로그 원인 수정
+Purpose: runId 미배포로 T3가 통째로 실패하고, max UID 공백·state 20 오판으로 Fire/Poll이 멈춘 경로를 고친다.
+Changes:
+
+- T3는 runId 없이 I/O. 회차 식별은 batchName. runId 미배포는 WARN
+- T4 min/max는 SQL. span<=0이면 밀도 Infinity 판정 안 함
+- 시그널 WF 시작됨=11, 20은 stop(공식). 미시작은 skip이지 error가 아님
+- 05/06 @runId 조건 제거
+Changed files: new_ver/test/02_SmokeLocal.js, new_ver/test/03_SmokeFire.js, new_ver/test/05_SmokeApiTest.js, new_ver/test/06_SmokeVerify.js, docs/log/log.md
+
+14. 2026-08-19 기본 스모크에 샘플 UID 소수 실전송
+Purpose: 샌드박스 Target에 pending 2건을 라이브러리 경로로 올리고, 기존 캔버스에서 batchStatus·Fetch·apiYn을 확인한다.
+Changes:
+
+- 03 Fire: dryRun=false, pending SMOKE_REAL_ROWS(2)건만 PostEvent
+- 05는 가짜 A/B 대신 실전송 Master URL + Profile Fetch. 404는 적재 지연으로 통과
+- 06은 apiYn=Y 확인 후 로그만 삭제. Target·Sample 플래그는 유지
+Changed files: new_ver/test/01_SmokeConfig.js, new_ver/test/03_SmokeFire.js, new_ver/test/05_SmokeApiTest.js, new_ver/test/06_SmokeVerify.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+13. 2026-08-19 스모크를 라이브러리 계약으로 재작성
+Purpose: Factory보다 스모크를 먼저 맞춰, 통과한 워커 진입 계약으로 이후 Factory를 짠다.
+Changes:
+
+- test 01~07: 설정은 BULK_CFG. 같은 캔버스 dryRun. PostEvent에 dryRun/workerCount/customAttr
+- 폴링·워커 보고는 {runId}|status. 실호출 기본 OFF. runId 컬럼·흔적 정리
+- workflow/worker/worker.js 를 07과 동일 계약으로 맞춤. Factory 00/01/02는 미변경
+Changed files: new_ver/test/01_SmokeConfig.js, new_ver/test/02_SmokeLocal.js, new_ver/test/03_SmokeFire.js, new_ver/test/04_SmokePolling.js, new_ver/test/05_SmokeApiTest.js, new_ver/test/06_SmokeVerify.js, new_ver/test/07_SmokeSignalWorker.js, new_ver/workflow/worker/worker.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+12. 2026-08-19 AUTH_TOKEN을 Profile API UI 경로로 명시
+Purpose: 공식 Profile API settings와 Debugger tools 문서로 토큰이 다름을 확인하고, Administration > Implementation에서 찾을 수 있게 주석·가이드를 맞춘다.
+Changes:
+
+- AUTH_TOKEN 주석: Profile API Require Authentication + Generate New Profile Authentication Token. Debugger tools 토큰 제외
+- 01 가이드 5절에 같은 화면의 세 구역(Account Details / Profile API / Debugger) 표
+Changed files: new_ver/js/testWooBulkApiWorker.js, docs/main/01_ProfileApiDataIntegration.md, new_ver/docs/newLogic.md, docs/log/log.md
+
+11. 2026-08-19 라이브러리 xtk:option 조회 제거
+Purpose: 설정은 BULK_CFG와 시그널만 쓰고, AUTH_OPTION / CUSTOM_ATTR_OPTION getOption 경로를 없앤다.
+Changes:
+
+- AUTH_OPTION, CUSTOM_ATTR_OPTION 및 getOption 호출 삭제. 토큰·CUSTOM_ATTR은 시그널 > BULK_CFG
+- newLogic 라이브러리 계약을 같은 우선순위로 맞춤. Factory 워커 상태 Option은 프로토타입 그대로
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/docs/newLogic.md, docs/log/log.md
 
 10. 2026-08-19 GitHub Develop 리모트 최초 푸시
 Purpose: 홈 디렉터리 Git과 분리해 프로젝트 전용 저장소를 만들고, 현재 전체 소스를 Develop 리모트에 올린다.

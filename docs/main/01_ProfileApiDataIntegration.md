@@ -360,19 +360,30 @@ mbox 과금과 별개로, Admin/Reporting/Bulk는 분당 50회 한도가 있다.
 
 ## 5. 인증
 
-Target **Administration > Implementation > Profile API**:
+같은 화면 **Administration > Implementation** 에 토큰이 두 종류 있다. Bulk에 넣는 것은 Profile API 쪽만이다.
+
+| 구역 | UI에서 찾는 이름 | 용도 | Bulk `AUTH_TOKEN` |
+|---|---|---|---|
+| Account Details | Client Code | URL의 `{CLIENT_CODE}` | 해당 없음 |
+| **Profile API** | Require Authentication, Generate New Profile Authentication Token | Bulk / Single / Fetch / batchStatus | **이 값** |
+| Debugger tools | Authorization Token, Generate New Authorization Token | mboxTrace·디버거. 약 6시간 | **아님** |
+
+공식: [Profile API settings](https://experienceleague.adobe.com/en/docs/target-dev/developer/implementation/methods/profile-api-settings)  
+디버거 토큰: [Troubleshoot content delivery](https://experienceleague.adobe.com/en/docs/target/using/activities/troubleshoot-activities/content-trouble) (Debugger Tools에서 발급, URL 파라미터로 사용)
+
+Profile API 절차:
 
 1. `Require Authentication` on/off 확인.
 2. on이면 `Generate New Profile Authentication Token`.
 3. 요청 헤더: `Authorization: Bearer {token}`.
 4. 토큰은 Expires In 기준으로 만료된다.
-5. 재발급하면 이전 토큰을 쓰는 모든 호출이 실패한다.
+5. 재발급하면 이전 토큰을 쓰는 모든 호출이 실패한다. (공식 WARNING)
 
 토큰 발급 권한: Approver 이상, workspace/product admin, 또는 Target product sysadmin.
 
-토큰을 코드에 하드코딩하지 말고, 런타임 시크릿(옵션, vault, 환경변수)으로 읽는다.
+인증이 off면 헤더 없이 호출된다. on인데 토큰이 없거나 Debugger 토큰을 넣으면 인증 실패다.
 
-인증이 off여도 client code와 네트워크 경로만 맞으면 호출은 된다. 운영에서는 on을 전제로 설계하는 편이 안전하다.
+이 저장소에서는 `BULK_CFG.AUTH_TOKEN`(또는 시그널 `authToken`)에 Profile API 토큰을 넣는다. 값은 로그에 남기지 않는다.
 
 ---
 
@@ -421,6 +432,15 @@ A 식별·속성
 - client code, 토큰, 엔드포인트 URL을 환경 설정으로 분리.
 - 오디언스: `profile.{paramName}` 조건 초안.
 - 네트워크: `*.tt.omtrdc.net` POST/GET.
+- Adobe Campaign에서 `HttpClientRequest`를 쓰면 **serverConf.xml `urlPermission`** 에 호스트가 있어야 한다. 없으면 `JST-310026`이고 Target에는 아무것도 안 올라간다. Fetch 404의 흔한 원인이다.
+
+```
+<urlPermission>
+  <url dnsSuffix="tt.omtrdc.net" urlRegEx="https://.*"/>
+</urlPermission>
+```
+
+허용 대상: `https://{CLIENT_CODE}.tt.omtrdc.net` (batchUpdate, Profile Fetch) 과 `https://mboxedge*.tt.omtrdc.net` (batchStatus). 변경 후 `nlserver` 재시작.
 
 ### C. 소스 추출
 
