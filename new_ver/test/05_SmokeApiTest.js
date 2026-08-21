@@ -19,8 +19,8 @@ function ok(n, c, d) {
 
 var CLIENT = String(instance.vars.smkClient || "");
 var RUN_ID = String(instance.vars.smkRunId || "");
-var MASTER = "wootar:testWooTargetBulkApiMaster";
-var DETAIL = "wootar:testWooTargetBulkApiDetail";
+var MASTER = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
+var DETAIL = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.SAVE_SCHEMA) : "wootar:testWooTargetBulkApiDetail";
 instance.vars.smkStatusUrl = "";
 instance.vars.smkFetchUid  = "";
 instance.vars.smkFetchUrl  = "";
@@ -114,7 +114,8 @@ if (instance.vars.smkTApi !== "1") {
       instance.vars.smkFetchUrl = fetchUrl;
       logInfo("  Postman Fetch GET " + fetchUrl);
       logInfo("  기대 profile.seg_id = " + expectSeg
-        + (instance.vars.smkCustom ? " / CUSTOM_ATTR=" + instance.vars.smkCustom : ""));
+        + ((typeof BULK_CFG !== "undefined" && BULK_CFG.CUSTOM_ATTR)
+          ? " / CUSTOM_ATTR=" + BULK_CFG.CUSTOM_ATTR : ""));
 
       var freq = new HttpClientRequest(fetchUrl);
       freq.method = "GET";

@@ -1,6 +1,6 @@
 <srcSchema _cs="Test Woo Target Bulk API Detail (wootar)" created="2026-08-18 07:54:18.856Z"
            createdBy-id="0" entitySchema="xtk:srcSchema" img="xtk:schema.png" label="Test Woo Target Bulk API Detail"
-           labelSingular="Test Woo Target Bulk API Detail" lastModified="2026-08-18 07:55:02.820Z"
+           labelSingular="Test Woo Target Bulk API Detail" lastModified="2026-08-20 05:33:00.000Z"
            mappingType="sql" md5="02247A3076F96484F9BE6633E660D867" modifiedBy-id="0"
            name="testWooTargetBulkApiDetail" namespace="wootar" xtkschema="xtk:srcSchema">
   <createdBy _cs="우해인 (hiwoo)"/>
@@ -8,8 +8,18 @@
 
   <element autopk="true" label="Test Woo Target Bulk API Detail" name="testWooTargetBulkApiDetail">
 
-    <attribute desc="고객 멤버십 고유 식별자" label="멤버십UID" length="10" name="membershipUid"
+    <!-- 큐 행과 1:1. 같은 UID가 날짜·세그마다 여러 Detail 가능 -->
+    <key name="queueLine">
+      <keyfield xpath="@ingestYm"/>
+      <keyfield xpath="@lineNo"/>
+    </key>
+
+    <attribute desc="고객 멤버십 식별자. 유니크 아님" label="멤버십UID" length="10" name="membershipUid"
                type="string"/>
+
+    <attribute desc="적재월 YYYYMM. Sample 큐 키" label="적재월" length="6" name="ingestYm"
+               type="string"/>
+    <attribute desc="월내 큐 일련. Sample 큐 키" label="큐일련" name="lineNo" type="long"/>
 
     <attribute desc="세그 식별자(파이프 구분) - 255자 초과 가능성 검토 필요" label="세그ID" length="255"
                name="segId" type="string"/>
@@ -24,8 +34,7 @@
              revIntegrity="neutral" revLabel="상세로그" target="wootar:testWooTargetBulkApiMaster"
              type="link"/>
 
-    <!-- insertOrUpdate(_key="@membershipUid") 의 조정 키 -->
-    <dbindex name="idx_membershipUid" unique="true">
+    <dbindex name="idx_membershipUid">
       <keyfield xpath="@membershipUid"/>
     </dbindex>
   </element>

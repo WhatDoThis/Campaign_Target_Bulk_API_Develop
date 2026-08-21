@@ -2,6 +2,7 @@
  * TBAWFactory / 02_Polling (워커 완료 감지)
  * ============================================================================
  * Option: {runId}|status 또는 {runId}|done|{sent}|{failed}
+ * sent 는 큐 행 수. UID 구간과 무관.
  * nextAction: working | next | finish  (03_Test 가 이 문자열을 본다)
  *
  * getOption 2번째 인자는 false (캐시 stale 방지). 설정 조회가 아니라 상태만.

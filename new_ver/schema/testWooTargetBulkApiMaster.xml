@@ -46,7 +46,7 @@
 
     <attribute desc="에러 메시지 (길이 제한 없음)" label="에러메시지" name="errorMessage" type="memo"/>
 
-    <!-- ===== batchStatus 짧은 조회 (워커 POST 직후 1~N회. incomplete면 후속 재조회) ===== -->
+    <!-- ===== batchStatus (전송은 URL만. 적재 컬럼은 TBAWStatus 잡) ===== -->
     <attribute desc="Adobe Target batchStatus 확인 URL" label="batchStatusURL" length="255"
                name="batchStatusUrl" type="string"/>
 

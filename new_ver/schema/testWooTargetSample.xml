@@ -6,7 +6,7 @@
   <createdBy _cs="우해인 (hiwoo)"/>
   <modifiedBy _cs="우해인 (hiwoo)"/>
   
-    <!-- 마케팅 수신동의 열거형 -->
+  <!-- 마케팅 수신동의 열거형 -->
   <enumeration basetype="string" label="마켓팅수신동의" name="mConsentEnum">
     <value label="동의" name="agreed" value="동의"/>
     <value label="미동의" name="disagreed" value="미동의"/>
@@ -20,14 +20,22 @@
 
   <element autopk="true" label="Test Woo Target Sample" name="testWooTargetSample">
 
-    <!-- 업무 키. 유니크 인덱스 자동 생성 -->
-    <key name="membershipUid">
-      <keyfield xpath="@membershipUid"/>
+    <!-- 큐 행 유니크. UID는 날짜·세그마다 여러 행 가능 -->
+    <key name="queueLine">
+      <keyfield xpath="@ingestYm"/>
+      <keyfield xpath="@lineNo"/>
     </key>
 
-    <!-- 멤버십 UID -->
-    <attribute desc="고객 멤버십 고유 식별자" label="멤버십UID" length="10" name="membershipUid"
-               notNull="true" type="string"/>
+    <!-- 멤버십 UID. Target thirdPartyId. 유니크 아님. 조회용 인덱스만 -->
+    <attribute desc="고객 멤버십 식별자. 동일 UID 복수 행 허용" label="멤버십UID" length="10"
+               name="membershipUid" notNull="true" type="string"/>
+
+    <!-- 전송 큐 키. 기존 행이 있으면 NOT NULL 추가가 PGS-220000 로 실패한다.
+         구조 업데이트는 nullable. 백필 후 적재 잡·워커가 값을 넣는다. -->
+    <attribute desc="적재월 YYYYMM. 워커 구간은 이 월만. 기존 테이블은 notNull 금지"
+               label="적재월" length="6" name="ingestYm" type="string"/>
+    <attribute desc="월내 적재 일련. 1부터. 기존 행 Default 0 이면 queueLine 유니크 충돌"
+               label="큐일련" name="lineNo" type="long"/>
 
     <!-- 마케팅 수신동의 -->
     <attribute desc="마케팅 수신 동의 여부" enum="mConsentEnum" label="마케팅수신동의" length="10"
@@ -57,9 +65,15 @@
     <attribute desc="Target Bulk API 전송 여부" enum="apiYnEnum" label="API 전송여부" length="1"
                name="apiYn" notNull="true" sqlDefault="'N'" type="string"/>
 
-    <!-- 워커 조회 전용 복합 인덱스. 선행 컬럼 apiYn -->
-    <dbindex name="idx_mt_apiYn_uid">
+    <!-- pending 스캔. 선행 apiYn → ingestYm → lineNo -->
+    <dbindex name="idx_mt_apiYn_queue">
       <keyfield xpath="@apiYn"/>
+      <keyfield xpath="@ingestYm"/>
+      <keyfield xpath="@lineNo"/>
+    </dbindex>
+
+    <!-- UID 조회용. unique 아님 -->
+    <dbindex name="idx_membershipUid">
       <keyfield xpath="@membershipUid"/>
     </dbindex>
 

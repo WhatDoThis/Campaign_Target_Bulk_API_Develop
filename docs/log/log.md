@@ -2,6 +2,16 @@
 
 ## Log Index
 
+37. 2026-08-21 GitHub Develop 리모트 동기화
+36. 2026-08-21 batchStatus 재조회 잡을 분리
+35. 2026-08-21 배치 5만·planName·POLL_MAX=0
+34. 2026-08-21 Factory-라이브러리 설정 중복 제거
+33. 2026-08-21 Factory를 큐 키 시그널로 업그레이드
+32. 2026-08-21 스모크 설정을 BULK_CFG 단일 소스로 정리
+31. 2026-08-20 스모크 5천만 count 제거·큐 백필 SQL
+30. 2026-08-20 Sample 큐 컬럼 notNull 제거 (PGS-220000)
+29. 2026-08-20 Sample·Detail에서 UID 유니크 제거
+28. 2026-08-20 전송 큐 키 ingestYm+lineNo (Phase A)
 27. 2026-08-20 GitHub Develop 리모트 동기화
 26. 2026-08-20 Factory 분할을 UID 오름차순 offset 으로 변경
 25. 2026-08-20 Factory에서 ENABLED·DRY_RUN 제거
@@ -31,6 +41,90 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+37. 2026-08-21 GitHub Develop 리모트 동기화
+Purpose: 큐 키 전환·Factory/스모크 정리·batchStatus 분리 잡을 origin/main에 올린다.
+Changes:
+
+- ingestYm+lineNo 큐 스키마·백필 SQL, Factory/워커/스모크 계약 통일
+- BULK_CFG 단일 소스, 배치 5만·planName, batchStatus 후속 WF(statusLogic)
+Changed files: docs/log/log.md, new_ver/docs/newLogic.md, new_ver/docs/statusLogic.md, new_ver/docs/TestResult.md, new_ver/js/testWooBulkApiWorker.js, new_ver/js/testWooBulkApiStatus.js, new_ver/schema/*, new_ver/test/*.js, new_ver/workflow/**
+
+36. 2026-08-21 batchStatus 재조회 잡을 분리
+Purpose: 전송 중 GET을 없애고, 1~2시간 뒤 Master URL을 청크 GET 하는 별도 WF로 적재 상태를 채운다.
+Changes:
+
+- 전송 라이브러리에서 POLL_MAX·pollBatchStatus 삭제. Master는 URL만
+- testWooBulkApiStatus.js + workflow/status 00/01/02. 공식 complete/incomplete/stuck
+- 24시간 incomplete는 로컬 stuck. enum에 unknown 추가 안 함
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/js/testWooBulkApiStatus.js, new_ver/workflow/status/00_Config.js, new_ver/workflow/status/01_StatusGet.js, new_ver/workflow/status/02_Decide.js, new_ver/docs/statusLogic.md, new_ver/docs/newLogic.md, new_ver/schema/testWooTargetBulkApiMaster.xml, docs/log/log.md
+
+35. 2026-08-21 배치 5만·planName·POLL_MAX=0
+Purpose: 전송 HTTP를 줄이고 planName을 같이 보낸다. complete GET은 후속 잡으로 분리한다.
+Changes:
+
+- BATCH_SIZE 20000→50000, CUSTOM_ATTR=@planName, POLL_MAX 1→0
+- WORKER_COUNT는 5 유지. Factory는 TBAW1~5만 발사
+Changed files: new_ver/js/testWooBulkApiWorker.js, docs/log/log.md
+
+34. 2026-08-21 Factory-라이브러리 설정 중복 제거
+Purpose: 스모크와 같이 Factory가 BULK_CFG 값을 다시 선언하거나 시그널로 덮지 않게 한다.
+Changes:
+
+- FACTORY_CFG에서 WORKER_COUNT·BATCH_SIZE 삭제. 00은 BULK_CFG만 읽음
+- 01 PostEvent에서 batchSize·dryRun 제거. workerCount=fireN만 유지
+- 라이브러리 주석: Factory는 오버라이드 없음. 스모크 실전송만 batchSize
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/worker/worker.js, new_ver/js/testWooBulkApiWorker.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+33. 2026-08-21 Factory를 큐 키 시그널로 업그레이드
+Purpose: 스모크 LineNo Ver 2가 FAIL=0이므로 Factory/워커를 ingestYm+lineNo 계약으로 맞춘다. 예전 uidStart를 남기면 워커가 throw한다.
+Changes:
+
+- 00: pending에 lineNo>=1·ingestYm. WORKER_MAX는 BULK_CFG
+- 01: 한 월 offset 분할, PostEvent ingestYm/lineStart/lineEnd. 토큰 미복사
+- worker.js: 큐 키 로그, done|sent|failed. 02 폴링은 계약 유지
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/workflow/worker/worker.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+32. 2026-08-21 스모크 설정을 BULK_CFG 단일 소스로 정리
+Purpose: BATCH_SIZE·WORKER_COUNT·스키마·토큰을 스모크가 다시 선언·오버라이드하지 않게 한다.
+Changes:
+
+- 01에서 SMOKE_BATCH/SMOKE_WORKERS/smkCustom 제거. 값은 BULK_CFG만
+- 02 T4/T5/T6/T6b, 05/06 스키마명을 BULK_CFG에서 읽음
+Changed files: new_ver/test/01_SmokeConfig.js, new_ver/test/02_SmokeLocal.js, new_ver/test/03_SmokeFire.js, new_ver/test/05_SmokeApiTest.js, new_ver/test/06_SmokeVerify.js, docs/log/log.md
+
+31. 2026-08-20 스모크 5천만 count 제거·큐 백필 SQL
+Purpose: 적재월/일련이 비어 있으면 워커가 대상을 못 잡고, 스모크 전표 count는 5천만에서 타임아웃 난다.
+Changes:
+
+- pending 조건에 lineNo>=1. T2는 1행 조회로 변경
+- T3 Detail 큐 키를 000000/1 로 샘플과 분리
+- backfillSampleQueue.sql 500만 건 단위 UPDATE
+Changed files: new_ver/test/01_SmokeConfig.js, new_ver/test/02_SmokeLocal.js, new_ver/schema/backfillSampleQueue.sql, new_ver/docs/newLogic.md, docs/log/log.md
+
+30. 2026-08-20 Sample 큐 컬럼 notNull 제거 (PGS-220000)
+Purpose: 기존 행이 있는 Sample에 ingestYm NOT NULL을 붙이면 PostgreSQL이 거절한다. 컬럼은 nullable로 추가하고 백필한다.
+Changes:
+
+- ingestYm/lineNo notNull 삭제. Default 0 NOT NULL 은 queueLine 유니크와 충돌
+Changed files: new_ver/schema/testWooTargetSample.xml, new_ver/docs/newLogic.md, docs/log/log.md
+
+29. 2026-08-20 Sample·Detail에서 UID 유니크 제거
+Purpose: 같은 UID가 날짜·세그마다 큐 행과 전송 로그로 남게 한다. UID 단독 업서트는 어제 이력을 덮어쓴다.
+Changes:
+
+- Sample: membershipUid UK 삭제, 비유니크 인덱스만
+- Detail: ingestYm+lineNo UK, 라이브러리 _key를 큐 키로
+Changed files: new_ver/schema/testWooTargetSample.xml, new_ver/schema/testWooTargetBulkApiDetail.xml, new_ver/js/testWooBulkApiWorker.js, new_ver/test/02_SmokeLocal.js, new_ver/docs/newLogic.md, docs/log/log.md
+
+28. 2026-08-20 전송 큐 키 ingestYm+lineNo (Phase A)
+Purpose: UID는 업무 키만 쓰고, 분할·조회·apiYn은 적재월+월내 일련으로 고정한다. 스키마·라이브러리·스모크만 반영하고 Factory는 다음 phase로 둔다.
+Changes:
+
+- Sample에 ingestYm/lineNo, queueLine UK, idx_mt_apiYn_queue
+- BulkApiWorker 시그널 ingestYm+lineStart+lineEnd. LINE_NO_MAX=20억, wrap 금지
+- 스모크 01~03/06/07을 큐 키 계약으로 맞춤. workflow 미변경
+Changed files: new_ver/docs/newLogic.md, new_ver/schema/testWooTargetSample.xml, new_ver/js/testWooBulkApiWorker.js, new_ver/test/01_SmokeConfig.js, new_ver/test/02_SmokeLocal.js, new_ver/test/03_SmokeFire.js, new_ver/test/06_SmokeVerify.js, new_ver/test/07_SmokeSignalWorker.js, docs/log/log.md
 
 27. 2026-08-20 GitHub Develop 리모트 동기화
 Purpose: Factory 운영 스위치 정리와 UID 오름차순 offset 분할을 origin/main에 올린다.

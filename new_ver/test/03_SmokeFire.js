@@ -1,6 +1,6 @@
 /* ============================================================================
  * TBAWSmoke / 03_Fire (시그널 발사)
- * TBAWSmokeSignal 의 sigWorker 로 PostEvent. dryRun=false, pending 소수 실전송.
+ * TBAWSmokeSignal 의 sigWorker 로 PostEvent. dryRun=false, pending 큐 키 소수 실전송.
  *
  * [주의] 대상 WF가 '시작됨'(state=20)이 아니면 예외 없이 로그만 남는다.
  *        complete 인자는 false. true면 대상이 완료되어 다음 시그널을 못 받는다.
@@ -81,44 +81,68 @@ if (instance.vars.smkTSignal !== "1") {
 
       var qr = xtk.queryDef.create(
         <queryDef schema={SCHEMA} operation="select" lineCount={String(realN)}>
-          <select><node expr="@membershipUid"/></select>
+          <select>
+            <node expr="@membershipUid"/>
+            <node expr="@ingestYm"/>
+            <node expr="@lineNo"/>
+          </select>
           <where><condition expr={PENDING}/></where>
-          <orderBy><node expr="@membershipUid" sortDesc="false"/></orderBy>
+          <orderBy>
+            <node expr="@ingestYm" sortDesc="false"/>
+            <node expr="@lineNo" sortDesc="false"/>
+          </orderBy>
         </queryDef>
       ).ExecuteQuery();
 
       var uids = [];
-      for each (var row in qr[ELEMENT]) uids.push(String(row.@membershipUid));
-      ok("실전송 대상 pending", uids.length > 0, "n=" + uids.length + " / 요청=" + realN);
+      var ym = "";
+      var lineStart = 0;
+      var lineEnd = 0;
+      for each (var row in qr[ELEMENT]) {
+        var rowYm = String(row.@ingestYm);
+        var rowLn = parseInt(String(row.@lineNo), 10) || 0;
+        if (!ym) {
+          ym = rowYm;
+          lineStart = rowLn;
+        }
+        if (rowYm !== ym) break;
+        uids.push(String(row.@membershipUid));
+        lineEnd = rowLn;
+      }
+      ok("실전송 대상 pending", uids.length > 0 && ym.length === 6 && lineStart >= 1,
+        "n=" + uids.length + " / 요청=" + realN + " / " + ym + " line " + lineStart + " ~ " + lineEnd);
 
-      if (uids.length === 0) {
+      if (uids.length === 0 || lineStart < 1) {
         mark("skip");
       } else {
-        var uidStart = uids[0];
-        var uidEnd   = uids[uids.length - 1];
-        instance.vars.smkRealStart = uidStart;
-        instance.vars.smkRealEnd   = uidEnd;
+        instance.vars.smkRealYm    = ym;
+        instance.vars.smkRealLineS = lineStart;
+        instance.vars.smkRealLineE = lineEnd;
+        instance.vars.smkRealStart = uids[0];
+        instance.vars.smkRealEnd   = uids[uids.length - 1];
         instance.vars.smkRealCount = uids.length;
 
         var params = <variables
             workerName="SMOKE"
-            uidStart={uidStart}
-            uidEnd={uidEnd}
+            ingestYm={ym}
+            lineStart={String(lineStart)}
+            lineEnd={String(lineEnd)}
             runId={RUN_ID}
             optKey={OPT_KEY}
             batchSize={String(uids.length)}
             dryRun="false"
             workerCount="1"
-            customAttr={String(instance.vars.smkCustom || "")}
             authToken=""/>;
 
-        logInfo("  실전송 발사: " + uidStart + " ~ " + uidEnd + " (" + uids.length + "건)");
+        logInfo("  실전송 발사: " + ym + " line " + lineStart + " ~ " + lineEnd
+          + " / uid " + uids[0] + " ~ " + uids[uids.length - 1]
+          + " (" + uids.length + "건)");
         logInfo("  발사 파라미터: " + params.toXMLString());
         mark("ready");
         xtk.workflow.PostEvent(SIG_WF, SIG_ACT, "", params, false);
 
         ok("PostEvent 실전송 발사", true,
-           SIG_WF + "/" + SIG_ACT + " " + uidStart + " ~ " + uidEnd);
+           SIG_WF + "/" + SIG_ACT + " " + ym + " " + lineStart + " ~ " + lineEnd);
       }
     } catch (e) {
       ok("PostEvent 발사", false, e.toString());

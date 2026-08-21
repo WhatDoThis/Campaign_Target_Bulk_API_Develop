@@ -6,12 +6,11 @@
 // 인스턴스 상태는 this. 스로틀은 workerCount + 첫 호출 워커별 분산.
 //
 // [Main Functions]
-// 1. queryMembers — apiYn N/NULL + UID 커서. CUSTOM_ATTR은 select node 추가
+// 1. queryMembers — apiYn N/NULL + ingestYm/lineNo 커서. CUSTOM_ATTR은 select node 추가
 // 2. buildPayload — batch=thirdPartyId,seg_id[,attr...]. 값은 URL-encode
 // 3. callBulkApi — POST v2 + 스로틀(첫 호출 워커별 분산) + 429/503 재시도
-// 4. pollBatchStatus — POST 직후 짧은 GET. 적재 완료 대기는 하지 않음
-// 5. saveMaster / saveToDb / updateApiYn — 제출 로그. 추가 속성은 Detail에 안 남김
-// 6. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
+// 4. saveMaster / saveToDb / updateApiYn — 제출 로그. batchStatusUrl만 저장. 적재 GET 없음
+// 5. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
 //
 // [Dependencies]
 // xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer
@@ -44,7 +43,8 @@ var BULK_CFG = {
 
 
     // ---- 처리 규모 ----
-    BATCH_SIZE  : 5000,                     // 배치당 행수. 시그널 batchSize로 오버라이드 가능
+    BATCH_SIZE  : 50000,                     // 배치당 행수. Factory는 시그널로 안 넘김. 스모크 실전송만 batchSize
+    LINE_NO_MAX : 2000000000,               // lineNo 가드. ACC long 최대(2147483647)보다 여유. wrap 금지
 
 
     // ---- 추가 프로필 속성 (Target profile.{name}) ----
@@ -53,7 +53,7 @@ var BULK_CFG = {
     //   예: "@planName, @phoneNumber"  또는  '["@planName","@phoneNumber"]'
     //   시그널 customAttr > 여기 값
     //   스키마에 없는 이름은 조회 시 예외. 오디언스는 profile.planName 등으로 사용
-    CUSTOM_ATTR   : "",
+    CUSTOM_ATTR   : "@planName",
     EXTRA_VAL_MAX : 256,                    // 속성값 절단. in-mbox profile value 한도에 맞춤
 
 
@@ -86,19 +86,12 @@ var BULK_CFG = {
     ERR_MSG_MAX    : 255,       // Master.errorMessage 기록 상한 (컬럼은 memo)
 
 
-    // ---- batchStatus 짧은 조회 ----
-    //   적재는 비동기(최대 24시간). 워커에서 완료를 기다리지 않음
-    //   POST 직후 1~N회 GET. incomplete면 Master에 남기고 후속 잡이 재조회
-    POLL_MAX       : 2,
-    POLL_WAIT_MS   : 3000,
-
-
     // ---- 레이트 리밋 방어 ----
     //   Target 한도: bulk profile update API 50 calls/min, 계정 전체 공유
     //   초과 시 429 아닌 503 반환
     //   https://experienceleague.adobe.com/en/docs/target/using/troubleshoot/target-limits
     ACCOUNT_CPM    : 50,        // 계정 분당 콜 한도 (Adobe 고정값)
-    WORKER_COUNT   : 5,         // 동시 가동 워커 수 기본값. 시그널 workerCount 우선
+    WORKER_COUNT   : 5,         // Factory 발사 수 + 스로틀 기본. 시그널 workerCount=실발사(skip 반영)
     WORKER_MAX     : 15,        // 최대 15. Factory가 이 값으로 클램프
     SAFETY_RATIO   : 0.7,       // 안전 마진. 타 팀 Admin/Reporting API 사용분 고려
     STAGGER_SLOT_MS: 1200,      // 워커 첫 POST 분산. 50콜/분 = 1.2s/콜. TBAW1=0, TBAW2=1.2s ...
@@ -114,15 +107,17 @@ var BULK_CFG = {
 // ============================================================
 // 생성자
 //   p = 시그널 파라미터(vars)
-//   필수: workerName, uidStart, uidEnd
-//   선택: batchSize, dryRun, runId, workerCount, authToken, customAttr
+//   필수: workerName, ingestYm, lineStart, lineEnd
+//   Factory 시그널: runId, workerCount(실발사). batchSize/dryRun/authToken/customAttr 없음
+//   스모크만 선택: batchSize, dryRun, authToken, customAttr
 // ============================================================
 function BulkApiWorker(p) {
   p = p || {};
 
   this.workerName = String(p.workerName || "W0");
-  this.uidStart   = String(p.uidStart || "");
-  this.uidEnd     = String(p.uidEnd || "");
+  this.ingestYm   = String(p.ingestYm || "").replace(/^\s+|\s+$/g, "");
+  this.lineStart  = parseInt(p.lineStart, 10);
+  this.lineEnd    = parseInt(p.lineEnd, 10);
 
   // runId: 회차 식별자. Distributor가 전 워커에 동일값 주입 시 회차 단위 조회 가능
   //        미주입 시 워커별 자체 생성 (회차 묶음 조회 불가)
@@ -142,8 +137,17 @@ function BulkApiWorker(p) {
   // 추가 속성: 시그널 customAttr > BULK_CFG.CUSTOM_ATTR
   this.customAttrs = this.parseCustomAttrs(this.resolveCustomAttrRaw(p));
 
-  if (this.uidStart === "" || this.uidEnd === "") {
-    throw new Error("[" + this.workerName + "] uidStart / uidEnd 미주입");
+  if (!/^[0-9]{6}$/.test(this.ingestYm)) {
+    throw new Error("[" + this.workerName + "] ingestYm 미주입 또는 YYYYMM 아님: " + this.ingestYm);
+  }
+  if (!(this.lineStart >= 1) || !(this.lineEnd >= this.lineStart)) {
+    throw new Error("[" + this.workerName + "] lineStart/lineEnd 구간 오류: "
+      + this.lineStart + " ~ " + this.lineEnd);
+  }
+  var lineMax = parseInt(BULK_CFG.LINE_NO_MAX, 10) || 2000000000;
+  if (this.lineEnd > lineMax) {
+    throw new Error("[" + this.workerName + "] lineEnd " + this.lineEnd
+      + " > LINE_NO_MAX " + lineMax);
   }
   if (this.BATCH_SIZE > BULK_CFG.LIMIT_ROWS) {
     throw new Error("[" + this.workerName + "] BATCH_SIZE " + this.BATCH_SIZE
@@ -197,7 +201,7 @@ BulkApiWorker.prototype.resolveCustomAttrRaw = function(p) {
 //         '["@planName","@phoneNumber"]'
 //         "planName,phoneNumber"
 //   헤더명은 스키마 속성명 그대로 (Target은 대소문자 구분 → profile.planName)
-//   예약(membershipUid, apiYn, seg_id, thirdPartyId)은 제외
+//   예약(membershipUid, apiYn, seg_id, thirdPartyId, ingestYm, lineNo)은 제외
 // ============================================================
 BulkApiWorker.prototype.parseCustomAttrs = function(raw) {
   var s = String(raw === undefined || raw === null ? "" : raw).replace(/^\s+|\s+$/g, "");
@@ -236,7 +240,8 @@ BulkApiWorker.prototype.parseCustomAttrs = function(raw) {
 
     var key = n.toLowerCase();
     if (key === "membershipuid" || key === "apiyn" || key === "segid"
-        || key === "seg_id" || key === "thirdpartyid") {
+        || key === "seg_id" || key === "thirdpartyid"
+        || key === "ingestym" || key === "lineno") {
       logWarning("[" + this.workerName + "] CUSTOM_ATTR 예약 컬럼 제외: @" + n);
       continue;
     }
@@ -352,21 +357,22 @@ BulkApiWorker.prototype.generateSegId = function() {
 
 
 // ============================================================
-// 멤버 조회 — UID 범위 + 커서 페이징
-//   첫 호출: uidStart 이상 / 이후: 직전 배치 마지막 UID 초과
-//   orderBy @membershipUid ASC. CSV·Detail 행 순서 = UID 오름차순
+// 멤버 조회 — 같은 ingestYm + lineNo 범위 + 커서 페이징
+//   첫 호출: lineStart 이상 / 이후: 직전 배치 마지막 lineNo 초과
+//   orderBy @lineNo ASC. CSV 행 순서 = 적재 일련
 //
 //   [주의] NULL 도 미전송으로 본다. 갱신 SQL과 동일 (3값 논리)
 //          Sample은 notNull+sqlDefault N 이라 결과는 @apiYn='N'과 같음
-//   [주의] distinct 미사용 — membershipUid 유니크. 5천만 건에서 정렬 비용만 발생
+//   [주의] distinct 미사용 — 같은 UID가 여러 큐 행일 수 있음. 구간은 lineNo
 // ============================================================
-BulkApiWorker.prototype.queryMembers = function(lastUid, fetchSize) {
+BulkApiWorker.prototype.queryMembers = function(lastLine, fetchSize) {
 
-  var lo = lastUid ? lastUid : this.uidStart;
-  var op = lastUid ? ">" : ">=";
+  var lo = (lastLine > 0) ? lastLine : this.lineStart;
+  var op = (lastLine > 0) ? ">" : ">=";
   var condition = "(@apiYn = 'N' OR @apiYn IS NULL)"
-    + " AND @membershipUid " + op + " '" + this.sqlLit(lo) + "'"
-    + " AND @membershipUid <= '" + this.sqlLit(this.uidEnd) + "'";
+    + " AND @ingestYm = '" + this.sqlLit(this.ingestYm) + "'"
+    + " AND @lineNo " + op + " " + lo
+    + " AND @lineNo <= " + this.lineEnd;
 
   var extraNodes = new XMLList();
   var ci;
@@ -379,13 +385,14 @@ BulkApiWorker.prototype.queryMembers = function(lastUid, fetchSize) {
               lineCount={String(fetchSize)}>
       <select>
         <node expr="@membershipUid"/>
+        <node expr="@lineNo"/>
         {extraNodes}
       </select>
       <where>
         <condition expr={condition}/>
       </where>
       <orderBy>
-        <node expr="@membershipUid" sortDesc="false"/>
+        <node expr="@lineNo" sortDesc="false"/>
       </orderBy>
     </queryDef>
   );
@@ -437,7 +444,7 @@ BulkApiWorker.prototype.buildPayload = function(batchRecords) {
 // 호출 간격 스로틀
 //   직전 호출로부터 MIN_INTERVAL_MS 미경과 시 잔여 시간만큼 대기
 //   조회/Detail 저장이 간격보다 오래 걸리면 no-op → 느린 구간엔 부하 없음
-//   재시도·batchStatus GET 포함 매 HTTP 호출 직전 적용
+//   재시도 포함 매 HTTP 호출 직전 적용. 적재 GET은 status 라이브러리
 //   첫 호출: 워커 번호 × STAGGER_SLOT_MS. 동시 기동 시 POST 폭주 방지
 // ============================================================
 BulkApiWorker.prototype.throttle = function() {
@@ -569,7 +576,7 @@ BulkApiWorker.prototype.callBulkApi = function(batchRecords) {
       + ") / " + responseBody.substring(0, 500));
   }
 
-  // batchStatus URL 추출. pollBatchStatus가 showDetails=true로 이어서 GET
+  // batchStatus URL 추출. 적재 GET은 wootar:testWooBulkApiStatus.js
   var batchStatus = this.xmlTag(responseBody, "batchStatus");
 
   return {
@@ -579,72 +586,6 @@ BulkApiWorker.prototype.callBulkApi = function(batchRecords) {
     attempt:     attempt,
     elapsedMs:   netMs      // 대기 시간 제외 → 순수 API 성능 지표
   };
-};
-
-
-// ============================================================
-// batchStatus 짧은 조회
-//   공식: 응답 URL을 그대로 GET. showDetails=true 면 건수 집계
-//   실패해도 제출 성공을 뒤집지 않음. Master에 부분 상태만 남김
-// ============================================================
-BulkApiWorker.prototype.pollBatchStatus = function(statusUrl) {
-  var blank = {
-    ingestStatus: "", consumedCount: 0, successfulUpdates: 0,
-    failedUpdates: 0, profilesNotFound: 0, checked: false
-  };
-
-  if (this.DRY_RUN || !statusUrl || statusUrl === "DRYRUN") return blank;
-
-  var url = statusUrl;
-  if (url.indexOf("showDetails=") < 0) {
-    url += (url.indexOf("?") >= 0 ? "&" : "?") + "showDetails=true";
-  }
-
-  var last = blank;
-  var i;
-
-  for (i = 1; i <= BULK_CFG.POLL_MAX; i++) {
-    if (i > 1) sleep(BULK_CFG.POLL_WAIT_MS);
-
-    try {
-      this.throttle();
-      var req = new HttpClientRequest(url);
-      req.method = "GET";
-      this.applyAuth(req);
-      req.execute();
-
-      var httpCode = req.response.code;
-      var body = String(req.response.body || "");
-      // execute()는 HTTP 4xx/5xx에서 예외를 안 던질 수 있음. 본문만 파싱하면 checked=true 오기록
-      if (httpCode < 200 || httpCode >= 300) {
-        logWarning("[" + this.workerName + "] batchStatus HTTP " + httpCode
-          + " (제출은 유지, 이번 GET 무시)");
-        continue;
-      }
-
-      var st = this.xmlTag(body, "status");
-      last = {
-        ingestStatus:     st,
-        consumedCount:    parseInt(this.xmlTag(body, "consumedCount"), 10) || 0,
-        successfulUpdates: parseInt(this.xmlTag(body, "successfulUpdates"), 10) || 0,
-        failedUpdates:    parseInt(this.xmlTag(body, "failedUpdates"), 10) || 0,
-        profilesNotFound: parseInt(this.xmlTag(body, "profilesNotFound"), 10) || 0,
-        checked:          true
-      };
-
-      logInfo("[" + this.workerName + "] batchStatus #" + i + " status=" + st
-        + " consumed=" + last.consumedCount
-        + " ok=" + last.successfulUpdates
-        + " fail=" + last.failedUpdates);
-
-      if (st === "complete" || st === "stuck") break;
-    } catch (e) {
-      logWarning("[" + this.workerName + "] batchStatus 조회 실패(제출은 유지): " + e.message);
-      break;
-    }
-  }
-
-  return last;
 };
 
 
@@ -737,8 +678,10 @@ BulkApiWorker.prototype.saveToDb = function(batchRecords, masterId) {
   for (var i = 0; i < batchRecords.length; i++) {
     var el = insertDOM.createElement(BULK_CFG.SAVE_ELEMENT);
     el.setAttribute("_operation",    "insertOrUpdate");
-    el.setAttribute("_key",          "@membershipUid");
+    el.setAttribute("_key",          "@ingestYm,@lineNo");
     el.setAttribute("membershipUid", batchRecords[i].uid);
+    el.setAttribute("ingestYm",      this.ingestYm);
+    el.setAttribute("lineNo",        String(batchRecords[i].line));
     el.setAttribute("segId",         this.clipSegId(batchRecords[i].segId));
     el.setAttribute("lastModified",  now);
     el.setAttribute("master-id",     String(mid));
@@ -751,21 +694,23 @@ BulkApiWorker.prototype.saveToDb = function(batchRecords, masterId) {
 
 
 // ============================================================
-// apiYn = 'Y' 갱신 — UID 범위 기반 단일 UPDATE
-//   워커 간 UID 구간 비중첩 전제 → 행 경합 없음
+// apiYn = 'Y' 갱신 — 같은 ingestYm + lineNo 구간 단일 UPDATE
+//   워커 간 lineNo 구간 비중첩 전제 → 행 경합 없음
 //   조회가 N/NULL 대상이므로 범위 내 기존 'Y'는 WHERE에서 자연 제외
 // ============================================================
-BulkApiWorker.prototype.updateApiYn = function(firstUid, lastUid) {
+BulkApiWorker.prototype.updateApiYn = function(firstLine, lastLine) {
 
   if (this.DRY_RUN) {
-    logInfo("[" + this.workerName + "][DRY_RUN] apiYn 갱신 생략 " + firstUid + " ~ " + lastUid);
+    logInfo("[" + this.workerName + "][DRY_RUN] apiYn 갱신 생략 "
+      + this.ingestYm + " " + firstLine + " ~ " + lastLine);
     return;
   }
 
   sqlExec(
     "UPDATE " + BULK_CFG.MEMBER_TABLE + " SET sapiyn='Y'" +
-    " WHERE smembershipuid >= '" + this.sqlLit(firstUid) + "'" +
-    " AND smembershipuid <= '" + this.sqlLit(lastUid) + "'" +
+    " WHERE singestym = '" + this.sqlLit(this.ingestYm) + "'" +
+    " AND ilineno >= " + firstLine +
+    " AND ilineno <= " + lastLine +
     " AND (sapiyn='N' OR sapiyn IS NULL)"
   );
 };
@@ -773,7 +718,7 @@ BulkApiWorker.prototype.updateApiYn = function(firstUid, lastUid) {
 
 // ============================================================
 // 메인 루프
-//   순서: 조회 → 전송 → (짧은)batchStatus → Master → Detail → apiYn
+//   순서: 조회 → 전송 → Master(URL) → Detail → apiYn. 적재 GET 없음
 //   커서 갱신은 try-catch 밖 — 실패 배치에서 커서 정지 시 동일 구간 무한 반복
 //   실패분은 apiYn='N' 유지 → 다음 라운드 자연 재처리
 // ============================================================
@@ -781,10 +726,11 @@ BulkApiWorker.prototype.run = function() {
   var totalProcessed = 0;
   var totalFailed = 0;
   var batchNo = 0;
-  var lastUid = "";
+  var lastLine = 0;
   var errorCount = 0;   // 연속 실패 카운터. 성공 시 리셋
 
-  logInfo("[" + this.workerName + "] 시작: " + this.uidStart + " ~ " + this.uidEnd
+  logInfo("[" + this.workerName + "] 시작: " + this.ingestYm
+    + " line " + this.lineStart + " ~ " + this.lineEnd
     + " / batch " + this.BATCH_SIZE
     + " / 스로틀 " + this.MIN_INTERVAL_MS + "ms"
     + " / workers=" + this.workerCount
@@ -795,7 +741,7 @@ BulkApiWorker.prototype.run = function() {
   while (true) {
 
     // 1) 조회
-    var result = this.queryMembers(lastUid, this.BATCH_SIZE);
+    var result = this.queryMembers(lastLine, this.BATCH_SIZE);
 
     // 2) 배치 구성
     var batchRecords = [];
@@ -809,6 +755,7 @@ BulkApiWorker.prototype.run = function() {
       }
       batchRecords.push({
         uid:    m.@membershipUid.toString(),
+        line:   parseInt(String(m.@lineNo), 10) || 0,
         segId:  this.generateSegId(),
         extras: extras
       });
@@ -819,14 +766,20 @@ BulkApiWorker.prototype.run = function() {
       logInfo("[" + this.workerName + "] 잔여 0건 → 루프 종료");
       break;
     }
+    if (!(batchRecords[0].line >= 1) || !(batchRecords[count - 1].line >= 1)) {
+      throw new Error("[" + this.workerName + "] lineNo 없음 — Sample 스키마 게시와 백필 후 재실행");
+    }
 
     batchNo++;
+    var firstLine = batchRecords[0].line;
+    var endLine   = batchRecords[count - 1].line;
     var firstUid  = batchRecords[0].uid;
     var endUid    = batchRecords[count - 1].uid;
     var batchName = this.workerName + "-" + this.runId + "-" + batchNo;
 
     logInfo("[" + this.workerName + "] #" + batchNo + " 조회 " + count
-      + "건 (" + firstUid + " ~ " + endUid + ")");
+      + "건 (line " + firstLine + " ~ " + endLine
+      + " / uid " + firstUid + " ~ " + endUid + ")");
 
     try {
       // 3) 전송
@@ -835,37 +788,27 @@ BulkApiWorker.prototype.run = function() {
         + apiResult.elapsedMs + "ms (시도 " + apiResult.attempt + "회)"
         + " / batchStatus: " + apiResult.batchStatus);
 
-      // 3b) 적재 상태 짧은 조회. incomplete여도 제출 성공으로 진행
-      var ingest = this.pollBatchStatus(apiResult.batchStatus);
-
-      // 4) Master
+      // 4) Master. 적재 컬럼은 status 잡이 채움
       var masterId = this.saveMaster({
-        batchName:         batchName,
-        workerName:        this.workerName,
-        recordCount:       count,
-        httpCode:          apiResult.code,
-        success:           true,
-        attemptCount:      apiResult.attempt,
-        elapsedMs:         apiResult.elapsedMs,
-        batchStatusUrl:    apiResult.batchStatus,
-        errorMessage:      "",
-        ingestChecked:     ingest.checked,
-        ingestStatus:      ingest.ingestStatus,
-        consumedCount:     ingest.consumedCount,
-        successfulUpdates: ingest.successfulUpdates,
-        failedUpdates:     ingest.failedUpdates,
-        profilesNotFound:  ingest.profilesNotFound
+        batchName:      batchName,
+        workerName:     this.workerName,
+        recordCount:    count,
+        httpCode:       apiResult.code,
+        success:        true,
+        attemptCount:   apiResult.attempt,
+        elapsedMs:      apiResult.elapsedMs,
+        batchStatusUrl: apiResult.batchStatus,
+        errorMessage:   ""
       });
 
       // 5) Detail
       var saved = this.saveToDb(batchRecords, masterId);
 
       // 6) apiYn
-      this.updateApiYn(firstUid, endUid);
+      this.updateApiYn(firstLine, endLine);
 
       logInfo("[" + this.workerName + "] #" + batchNo + " 저장 완료 "
-        + "(master " + masterId + " / detail " + saved + "건 / apiYn 갱신"
-        + (ingest.checked ? " / ingest=" + ingest.ingestStatus : "") + ")");
+        + "(master " + masterId + " / detail " + saved + "건 / apiYn 갱신)");
 
       totalProcessed += count;
       errorCount = 0;
@@ -906,7 +849,7 @@ BulkApiWorker.prototype.run = function() {
     }
 
     // 커서 전진 (성공/실패 무관)
-    lastUid = endUid;
+    lastLine = endLine;
   }
 
   logInfo("[" + this.workerName + "] 완료 — 성공 " + totalProcessed

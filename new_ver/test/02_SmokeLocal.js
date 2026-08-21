@@ -1,11 +1,11 @@
 /* ============================================================================
  * TBAWSmoke / 02_Local (로컬 스키마·분할·라이브러리 dryRun)
- * 스키마 I/O, UID 분할, 페이로드 규격, apiYn 왕복, 같은 캔버스 dryRun.
+ * 스키마 I/O, 큐 키(ingestYm+lineNo) offset 분할, 페이로드 규격, apiYn 왕복, dryRun.
  *
  * [Main Functions]
- * 1. Member/Master/Detail 도달성 + runId 물리 컬럼
+ * 1. Member/Master/Detail 도달성 + 큐 컬럼 + runId 물리 컬럼
  * 2. Master/Detail 쓰기. 링크는 [@master-id] 와 [master/@id] (같은 조인 키)
- * 3. arith 분할 검증
+ * 3. 같은 ingestYm 안 lineNo offset 분할 검증
  * 4. BulkApiWorker dryRun (T_LIB_DRY)
  *
  * [Dependencies]
@@ -27,10 +27,8 @@ var SCHEMA  = String(instance.vars.smkSchema);
 var ELEMENT = String(instance.vars.smkElement);
 var PENDING = String(instance.vars.smkPending);
 var TAG     = String(instance.vars.smkTag);
-var UIDP    = String(instance.vars.smkUidPrefix);
-var UIDD    = parseInt(instance.vars.smkUidDigits, 10) || 9;
-var MASTER  = "wootar:testWooTargetBulkApiMaster";
-var DETAIL  = "wootar:testWooTargetBulkApiDetail";
+var MASTER  = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
+var DETAIL  = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.SAVE_SCHEMA) : "wootar:testWooTargetBulkApiDetail";
 
 function countOf(schema, cond) {
   var q = "<queryDef schema='" + schema + "' operation='count'>"
@@ -39,19 +37,57 @@ function countOf(schema, cond) {
   return parseInt(xtk.queryDef.create(new XML(q)).ExecuteQuery().@count, 10) || 0;
 }
 
-function pad(n) {
-  var s = String(n);
-  while (s.length < UIDD) s = "0" + s;
-  return UIDP + s;
+function fetchPendingRow(offset) {
+  var q = xtk.queryDef.create(
+    <queryDef schema={SCHEMA} operation="select"
+              startLine={String(offset)} lineCount="1">
+      <select>
+        <node expr="@membershipUid"/>
+        <node expr="@ingestYm"/>
+        <node expr="@lineNo"/>
+      </select>
+      <where><condition expr={PENDING}/></where>
+      <orderBy>
+        <node expr="@ingestYm" sortDesc="false"/>
+        <node expr="@lineNo" sortDesc="false"/>
+      </orderBy>
+    </queryDef>
+  ).ExecuteQuery();
+  var row = { uid: "", ym: "", line: 0 };
+  for each (var x in q[ELEMENT]) {
+    row.uid  = String(x.@membershipUid);
+    row.ym   = String(x.@ingestYm);
+    row.line = parseInt(String(x.@lineNo), 10) || 0;
+  }
+  return row;
 }
 
 logInfo("=== T2 Schema Reachability ===");
-var memberTotal = -1;
-try { memberTotal = countOf(SCHEMA, ""); ok("Member 조회", true, "total=" + memberTotal); }
-catch (e) { ok("Member 조회", false, e.toString()); }
+try {
+  var probe = xtk.queryDef.create(
+    <queryDef schema={SCHEMA} operation="select" lineCount="1">
+      <select><node expr="@membershipUid"/></select>
+    </queryDef>).ExecuteQuery();
+  var probeUid = "";
+  for each (var p in probe[ELEMENT]) probeUid = String(p.@membershipUid);
+  ok("Member 조회", probeUid !== "", "uid=" + probeUid + " (전표 count 생략)");
+} catch (e) { ok("Member 조회", false, e.toString()); }
 
-try { ok("PendingCond 유효", true, "pending=" + countOf(SCHEMA, PENDING)); }
-catch (e) { ok("PendingCond 유효", false, e.toString()); }
+try {
+  var qHead = fetchPendingRow(0);
+  ok("PendingCond 유효", qHead.uid !== "",
+    qHead.uid ? ("uid=" + qHead.uid) : "0건 ← 백필 SQL 후 재실행");
+  ok("큐 컬럼 조회(ingestYm/lineNo)", qHead.ym.length === 6 && qHead.line >= 1,
+    "ym=" + qHead.ym + " line=" + qHead.line + " uid=" + qHead.uid
+      + (qHead.line >= 1 ? "" : " ← schema/backfillSampleQueue.sql"));
+  instance.vars.smkMinYm   = qHead.ym;
+  instance.vars.smkMinLine = qHead.line;
+  instance.vars.smkMinUid  = qHead.uid;
+} catch (e) {
+  ok("PendingCond 유효", false, e.toString());
+  ok("큐 컬럼 조회(ingestYm/lineNo)", false,
+    e.toString() + " ← Sample 스키마 게시 + 백필");
+}
 
 try { countOf(MASTER, ""); ok("Master 조회", true); } catch (e) { ok("Master 조회", false, e.toString()); }
 try { countOf(DETAIL, ""); ok("Detail 조회", true); } catch (e) { ok("Detail 조회", false, e.toString()); }
@@ -139,8 +175,10 @@ else {
       dom.root.setAttribute("xtkschema", DETAIL);
       var el = dom.createElement("testWooTargetBulkApiDetail");
       el.setAttribute("_operation",    "insertOrUpdate");
-      el.setAttribute("_key",          "@membershipUid");
+      el.setAttribute("_key",          "@ingestYm,@lineNo");
       el.setAttribute("membershipUid", "SMK0000001");
+      el.setAttribute("ingestYm",      "000000");
+      el.setAttribute("lineNo",        "1");
       el.setAttribute("segId",         "w01|w02|w03");
       el.setAttribute("lastModified",  now);
       el.setAttribute("master-id",     String(masterId));
@@ -176,62 +214,49 @@ else {
 }
 
 logInfo("=== T4 Partition ===");
-function uidNum(u) { return parseInt(String(u).substring(UIDP.length), 10) || 0; }
-function edgeUidSql(agg) {
-  var tbl = (typeof BULK_CFG !== "undefined") ? BULK_CFG.MEMBER_TABLE : "WootarTestWooTargetSample";
-  return String(sqlGetString(
-    "SELECT " + agg + "(smembershipuid) FROM " + tbl
-      + " WHERE sapiyn='N' OR sapiyn IS NULL"
-  ) || "");
-}
-function edgeUid(descAsc) {
-  var sortDesc = (descAsc === "max") ? "true" : "false";
-  var r = xtk.queryDef.create(
-    <queryDef schema={SCHEMA} operation="select" lineCount="1">
-      <select><node expr="@membershipUid"/></select>
-      <where><condition expr={PENDING}/></where>
-      <orderBy>
-        <node expr="@membershipUid" sortDesc={sortDesc}/>
-      </orderBy>
-    </queryDef>).ExecuteQuery();
-  for each (var x in r[ELEMENT]) return String(x.@membershipUid);
-  return "";
-}
-
-instance.vars.smkMinUid = "";
 if (instance.vars.smkTPart !== "1") { skip("T4", "스위치 OFF"); }
 else {
   try {
-    var minUid = "", maxUid = "";
-    try { minUid = edgeUidSql("min"); maxUid = edgeUidSql("max"); } catch (eSql) {
-      logWarning("  min/max SQL 실패 → queryDef 폴백: " + eSql.toString());
-      minUid = edgeUid("min");
-      maxUid = edgeUid("max");
-    }
-    ok("min/max UID 조회", minUid !== "" && maxUid !== "", minUid + " ~ " + maxUid);
-    instance.vars.smkMinUid = minUid;
+    var head = fetchPendingRow(0);
+    ok("pending 큐 헤드", head.ym.length === 6 && head.line >= 1,
+      head.ym + " line=" + head.line + " uid=" + head.uid);
+    instance.vars.smkMinYm   = head.ym;
+    instance.vars.smkMinLine = head.line;
+    instance.vars.smkMinUid  = head.uid;
 
-    var lo = uidNum(minUid), hi = uidNum(maxUid), span = hi - lo + 1;
-    if (span <= 0) {
-      ok("UID 구간 산술", false, "span=" + span + " lo=" + lo + " hi=" + hi);
+    if (head.line < 1) {
+      ok("큐 키 백필", false, "lineNo<1 — newLogic 12.2 백필 후 재실행");
     } else {
-      var per = Math.ceil(span / (parseInt(instance.vars.smkWorkers, 10) || 5));
-      var prevEnd = lo - 1, gap = 0, ovl = 0;
-      var w;
-
-      for (w = 1; w <= (parseInt(instance.vars.smkWorkers, 10) || 5); w++) {
-        var s = lo + (w - 1) * per, e2 = Math.min(s + per - 1, hi);
-        if (s > hi) { logInfo("  worker" + w + " : 할당 없음"); continue; }
-        if (s > prevEnd + 1) gap++;
-        if (s <= prevEnd) ovl++;
-        prevEnd = e2;
-        logInfo("  worker" + w + " : " + pad(s) + " ~ " + pad(e2));
+      var wCnt = (typeof BULK_CFG !== "undefined")
+        ? (parseInt(BULK_CFG.WORKER_COUNT, 10) || 5) : 5;
+      var remaining = parseInt(instance.vars.smkLimit, 10) || 300;
+      var perOff = Math.ceil(remaining / wCnt);
+      var marks = [], mi;
+      for (mi = 0; mi < wCnt; mi++) {
+        var off = mi * perOff;
+        if (off >= remaining) break;
+        marks.push(off);
       }
-      ok("구간 누락 없음", gap === 0, "gap=" + gap);
+      marks.push(remaining - 1);
+
+      var prevEndLine = 0, ovl = 0, ymMix = 0, w;
+      for (w = 0; w < marks.length - 1; w++) {
+        var sRow = fetchPendingRow(marks[w]);
+        var endOff = (w === marks.length - 2) ? marks[w + 1] : (marks[w + 1] - 1);
+        var eRow = fetchPendingRow(endOff);
+        if (sRow.line < 1 || eRow.line < 1) {
+          logWarning("  worker" + (w + 1) + " : offset 공백 start=" + marks[w] + " end=" + endOff);
+          continue;
+        }
+        if (sRow.ym !== head.ym || eRow.ym !== head.ym) ymMix++;
+        if (prevEndLine > 0 && sRow.line <= prevEndLine) ovl++;
+        prevEndLine = eRow.line;
+        logInfo("  worker" + (w + 1) + " : " + sRow.ym + " line " + sRow.line + " ~ " + eRow.line
+          + " (" + sRow.uid + " ~ " + eRow.uid + ")");
+      }
+      ok("구간 월 단일", ymMix === 0, "다른 월 경계=" + ymMix);
       ok("구간 중복 없음", ovl === 0, "overlap=" + ovl);
-      ok("마지막 구간이 max 커버", prevEnd === hi, prevEnd + " vs " + hi);
-      ok("UID 밀도(arith 적합성)", memberTotal > 0 && (memberTotal / span) > 0.5,
-         "density=" + (memberTotal / span).toFixed(3) + " (0.5 미달 시 offset 모드 권장)");
+      ok("마지막 워커 end line 존재", prevEndLine >= 1, "endLine=" + prevEndLine);
     }
   } catch (e) { ok("T4 Partition", false, e.toString()); }
 }
@@ -239,13 +264,17 @@ else {
 logInfo("=== T5 Payload Spec ===");
 var seg = "w01|w02|w03|w04|w05|w06|w07|w08|w09|w10|w11|w12";
 var enc = encodeURIComponent(seg);
-var extraHead = String(instance.vars.smkCustom || "").replace(/@/g, "").replace(/\s/g, "");
+var extraHead = "";
+if (typeof BULK_CFG !== "undefined") {
+  extraHead = String(BULK_CFG.CUSTOM_ATTR || "").replace(/@/g, "").replace(/\s/g, "");
+}
 var head = "batch=thirdPartyId,seg_id" + (extraHead ? "," + extraHead : "") + "\n";
 var row  = "U000000001," + enc + "\n";
-var bs   = 5000;
+var bs = (typeof BULK_CFG !== "undefined") ? (parseInt(BULK_CFG.BATCH_SIZE, 10) || 5000) : 5000;
+var cap = (typeof BULK_CFG !== "undefined") ? (parseInt(BULK_CFG.LIMIT_FILE_BYTES, 10) || (50 * 1024 * 1024)) : (50 * 1024 * 1024);
 ok("파이프 인코딩", enc.indexOf("%7C") >= 0, enc.substring(0, 24) + "...");
 ok("batch= 프리픽스", head.indexOf("batch=") === 0, head.replace(/\n/g, ""));
-ok("배치 50MB 이내", head.length + row.length * bs < 50 * 1024 * 1024,
+ok("배치 50MB 이내", head.length + row.length * bs < cap,
    ((head.length + row.length * bs) / 1048576).toFixed(2) + "MB @" + bs + "행");
 
 logInfo("=== T6 Cursor ===");
@@ -257,15 +286,17 @@ else {
       <queryDef schema={SCHEMA} operation="select" lineCount="3">
         <select><node expr="@membershipUid"/></select>
         <where><condition expr={PENDING}/></where>
-        <orderBy><node expr="@membershipUid" sortDesc="false"/></orderBy>
+        <orderBy>
+          <node expr="@ingestYm" sortDesc="false"/>
+          <node expr="@lineNo" sortDesc="false"/>
+        </orderBy>
       </queryDef>).ExecuteQuery();
     for each (var v in vr[ELEMENT]) vs.push(String(v.@membershipUid));
 
     if (vs.length === 0) { skip("T6", "pending 레코드 없음"); }
     else {
-      var ns = SCHEMA.split(":")[0];
-      var tbl = ns.substr(0,1).toUpperCase() + ns.substr(1)
-              + ELEMENT.substr(0,1).toUpperCase() + ELEMENT.substr(1);
+      var tbl = (typeof BULK_CFG !== "undefined" && BULK_CFG.MEMBER_TABLE)
+        ? String(BULK_CFG.MEMBER_TABLE) : "WootarTestWooTargetSample";
       var inList = "'" + vs.join("','") + "'";
       sqlExec("UPDATE " + tbl + " SET sapiyn='Y' WHERE smembershipuid IN (" + inList + ")");
       ok("sqlExec UPDATE 반영",
@@ -282,24 +313,26 @@ if (instance.vars.smkTLibDry !== "1") { skip("T6b", "스위치 OFF"); }
 else if (typeof BulkApiWorker !== "function") { ok("library dryRun", false, "BulkApiWorker 없음"); }
 else {
   try {
-    var loUid = String(instance.vars.smkMinUid || "");
-    if (!loUid) {
-      try { loUid = edgeUidSql("min"); } catch (eLo) { loUid = edgeUid("min"); }
+    var ym0 = String(instance.vars.smkMinYm || "");
+    var ln0 = parseInt(instance.vars.smkMinLine, 10) || 0;
+    if (!ym0 || ln0 < 1) {
+      var h2 = fetchPendingRow(0);
+      ym0 = h2.ym;
+      ln0 = h2.line;
     }
-    if (!loUid) { skip("T6b", "pending UID 없음"); }
+    if (!ym0 || ln0 < 1) { skip("T6b", "pending 큐 키 없음 — 백필 필요"); }
     else {
-      var s0 = uidNum(loUid);
       var lim = parseInt(instance.vars.smkLimit, 10) || 300;
+      var tail = fetchPendingRow(lim - 1);
+      var ln1 = (tail.line >= 1 && tail.ym === ym0) ? tail.line : (ln0 + lim - 1);
       var wdry = new BulkApiWorker({
         workerName:  "SMOKE-LOCAL",
-        uidStart:    pad(s0),
-        uidEnd:      pad(s0 + lim - 1),
+        ingestYm:    ym0,
+        lineStart:   String(ln0),
+        lineEnd:     String(ln1),
         runId:       String(instance.vars.smkRunId),
-        batchSize:   String(instance.vars.smkBatch),
         dryRun:      "true",
-        workerCount: "1",
-        customAttr:  String(instance.vars.smkCustom || ""),
-        authToken:   ""
+        workerCount: "1"
       });
       var rd = wdry.run();
       ok("library dryRun 예외 없음", true, "sent=" + rd.sent + " fail=" + rd.failed + " batches=" + rd.batches);

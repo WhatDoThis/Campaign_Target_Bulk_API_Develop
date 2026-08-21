@@ -1,11 +1,12 @@
 /* ============================================================================
  * TBAWSmoke / 01_Config (스모크 설정·정합성)
- * 설정은 BULK_CFG + 이 파일 상단 스위치만. xtk:option 으로 설정을 읽지 않음.
- * 02는 dryRun. 03→07은 샘플 UID SMOKE_REAL_ROWS건 실전송(샌드박스).
+ * 연동 값(스키마·배치·토큰·워커 수)은 BULK_CFG 만. 이 파일은 스모크 스위치·캔버스만.
+ * xtk:option 으로 설정을 읽지 않음.
+ * 02는 dryRun. 03→07은 pending 큐 키 SMOKE_REAL_ROWS건 실전송(샌드박스).
  *
  * [Main Functions]
  * 1. loadLibrary 후 BULK_CFG / BulkApiWorker 존재 확인
- * 2. 스위치·스모크 상수를 instance.vars 로 전파
+ * 2. 스모크 스위치·캔버스 상수를 instance.vars 로 전파 (BULK_CFG 값은 재선언하지 않음)
  *
  * [Dependencies]
  * wootar:testWooBulkApiWorker.js, formatDate, setOption(상태 초기화만)
@@ -15,7 +16,7 @@ loadLibrary("wootar:testWooBulkApiWorker.js", false);
 
 /* --- [S1] 테스트 스위치 ------------------------------------------------- */
 var T_SCHEMA_IO = true;    // Master/Detail 쓰기·링크·삭제
-var T_PARTITION = true;    // 워커 UID 분할 산술 검증
+var T_PARTITION = true;    // 워커 큐 키(ingestYm+lineNo) offset 분할 검증
 var T_CURSOR    = true;    // sqlExec apiYn 왕복 (3건, 원복)
 var T_LIB_DRY   = true;    // 같은 캔버스에서 라이브러리 dryRun (미전송)
 var T_SIGNAL    = true;    // PostEvent → TBAWSmokeSignal. 기본 실전송(소수)
@@ -23,14 +24,12 @@ var T_API_CHECK = true;    // 05: 실전송 Master batchStatus + Profile Fetch
 var T_API_NEG   = false;   // batch= 누락 실패 경로 (가짜 프로필 아님)
 var DO_CLEANUP  = true;    // 종료 시 이번 runId / SMOKE 로그 삭제. Target·apiYn은 남김
 
-/* --- [S2] 스모크 전용 상수. 운영 Factory 값이 아님 -------------------- */
+/* --- [S2] 스모크 전용. BATCH_SIZE / WORKER_COUNT / 스키마 / 토큰은 BULK_CFG -- */
 var SIGNAL_WF       = "TBAWSmokeSignal";
 var SIG_ACTIVITY    = "sigWorker";
-var SMOKE_WORKERS   = 5;
-var SMOKE_BATCH     = 100;   // 02 dryRun 조회 폭
-var SMOKE_LIMIT     = 300;
+var SMOKE_LIMIT     = 300;   // T4 분할·T6b 구간 폭. 운영 배치 크기 아님
 var SMOKE_REAL_ROWS = 2;     // 03→07 실전송 행수. 샌드박스 소수만
-var MAX_POLL        = 20;
+var MAX_POLL        = 20;    // Option 핸드셰이크 횟수. BULK_CFG.POLL_MAX(batchStatus GET) 와 다름
 
 var PASS = 0, FAIL = 0, FAILS = [];
 function ok(n, c, d) {
@@ -48,10 +47,15 @@ ok("BulkApiWorker 정의", typeof BulkApiWorker === "function", "");
 var MEMBER_SCHEMA = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MEMBER_SCHEMA || "") : "";
 var CLIENT_CODE   = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.CLIENT_CODE || "") : "";
 var BATCH_SIZE    = (typeof BULK_CFG !== "undefined") ? parseInt(BULK_CFG.BATCH_SIZE, 10) : 0;
+var LINE_MAX      = (typeof BULK_CFG !== "undefined") ? parseInt(BULK_CFG.LINE_NO_MAX, 10) : 0;
+var W_COUNT       = (typeof BULK_CFG !== "undefined") ? parseInt(BULK_CFG.WORKER_COUNT, 10) : 0;
 
 ok("MemberSchema 형식", MEMBER_SCHEMA.indexOf(":") > 0, MEMBER_SCHEMA);
 ok("ClientCode 존재", CLIENT_CODE.length > 0, CLIENT_CODE);
 ok("BATCH_SIZE 1~500000", BATCH_SIZE > 0 && BATCH_SIZE <= 500000, "=" + BATCH_SIZE);
+ok("LINE_NO_MAX 1~2147483647", LINE_MAX >= 1 && LINE_MAX <= 2147483647,
+  isNaN(LINE_MAX) ? "라이브러리에 LINE_NO_MAX 없음 — testWooBulkApiWorker.js 재게시" : "=" + LINE_MAX);
+ok("WORKER_COUNT 1~WORKER_MAX", W_COUNT >= 1, "=" + W_COUNT);
 ok("AUTH_TOKEN 비어 있음 또는 설정됨", true,
   (typeof BULK_CFG !== "undefined" && BULK_CFG.AUTH_TOKEN) ? "Profile API 토큰 on" : "헤더 생략(Require Authentication OFF)");
 
@@ -64,17 +68,12 @@ instance.vars.smkElement   = (MEMBER_SCHEMA.indexOf(":") > 0) ? MEMBER_SCHEMA.sp
 instance.vars.smkClient    = CLIENT_CODE;
 instance.vars.smkUrl       = "https://" + CLIENT_CODE + ".tt.omtrdc.net/m2/"
                            + CLIENT_CODE + "/v2/profile/batchUpdate";
-instance.vars.smkPending   = "(@apiYn = 'N' OR @apiYn IS NULL)";
-instance.vars.smkUidPrefix = "U";
-instance.vars.smkUidDigits = 9;
-instance.vars.smkBatch     = SMOKE_BATCH;
+instance.vars.smkPending   = "(@apiYn = 'N' OR @apiYn IS NULL) AND @lineNo >= 1 AND @ingestYm != ''";
 instance.vars.smkLimit     = SMOKE_LIMIT;
 instance.vars.smkRealRows  = SMOKE_REAL_ROWS;
-instance.vars.smkWorkers   = SMOKE_WORKERS;
 instance.vars.smkMaxPoll   = MAX_POLL;
 instance.vars.smkPollCnt   = 0;
 instance.vars.smkOptKey    = "WORKER_DONE_SMOKE";
-instance.vars.smkCustom    = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.CUSTOM_ATTR || "") : "";
 
 instance.vars.smkTSchemaIo = T_SCHEMA_IO ? "1" : "0";
 instance.vars.smkTPart     = T_PARTITION ? "1" : "0";
@@ -91,5 +90,7 @@ instance.vars.smkFails = FAILS.join(", ");
 
 try { setOption(instance.vars.smkOptKey, "", "smoke worker status"); } catch (e) {}
 logInfo("  URL = " + instance.vars.smkUrl);
-logInfo("  customAttr = " + (instance.vars.smkCustom || "(none)"));
+logInfo("  BATCH_SIZE=" + BATCH_SIZE + " WORKER_COUNT=" + W_COUNT
+  + " customAttr=" + ((typeof BULK_CFG !== "undefined" && BULK_CFG.CUSTOM_ATTR) ? BULK_CFG.CUSTOM_ATTR : "(none)"));
 logInfo("  실전송 행수 = " + SMOKE_REAL_ROWS + " (03 Fire → 07, dryRun=false)");
+logInfo("  pending 조건 = 미전송 AND lineNo>=1 AND ingestYm 있음 (백필 전 0건)");
