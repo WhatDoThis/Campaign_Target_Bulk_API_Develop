@@ -8,6 +8,7 @@
  *   Start → 00 → 01_StatusGet → 02_Decide → 03_Test
  *     Test working → 1m Wait → 01
  *     Test finish  → End
+ *   03_Test 조건: String(instance.vars.nextAction) == 'working' | 'finish'
  *
  * [Main Functions]
  * 1. STATUS_CFG / BULK_CFG 정합

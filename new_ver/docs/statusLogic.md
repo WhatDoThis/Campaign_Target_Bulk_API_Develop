@@ -31,6 +31,54 @@ Start
 
 한 JS가 전 건을 돌지 않는다. `CHUNK_SIZE`(20)만큼만 GET하고 1분 쉰다.
 
+### 2.1 Campaign Test / Wait (캔버스 입력값)
+
+WF 내부명 예: `TBAWStatus`. Test 활동명 예: `03_Test`.  
+조건식은 **JavaScript** 탭에 그대로 붙인다. (`02_Decide`가 `instance.vars.nextAction`에 문자열을 쓴다.)
+
+**캔버스 연결**
+
+```
+02_Decide → 03_Test
+  03_Test [working] → Wait (1 minute) → 01_StatusGet
+  03_Test [finish]  → End
+```
+
+**Wait 활동**
+
+| 항목 | 값 |
+|---|---|
+| 라벨 | `Wait 1m` (또는 `1분 대기`) |
+| Duration | `1 minute` |
+
+**Test 활동 — 전환(Transition) 2개만.** `next` 분기는 없다.
+
+| # | 전환 라벨 (Label) | 조건 (Condition) | 다음 활동 |
+|---|---|---|---|
+| 1 | `working` | `String(instance.vars.nextAction) == 'working'` | Wait 1m → `01_StatusGet` |
+| 2 | `finish` | `String(instance.vars.nextAction) == 'finish'` | End |
+
+ACC UI에서 라벨을 한글로 쓰려면:
+
+| # | 전환 라벨 | 조건 (동일) | 다음 |
+|---|---|---|---|
+| 1 | `처리중` | `String(instance.vars.nextAction) == 'working'` | Wait → 01 |
+| 2 | `종료` | `String(instance.vars.nextAction) == 'finish'` | End |
+
+**주의**
+
+- 조건에 `next`를 넣지 않는다. Status JS는 `working` / `finish`만 설정한다.
+- 매칭되는 전환이 없으면 WF가 멈춘다. `02_Decide`를 거친 뒤 Test로 가야 한다.
+- `finish`여도 Master에 `incomplete`가 남을 수 있다 (`MAX_RUN_POLL` 타임아웃). 다음 WF 실행이 이어서 조회한다.
+
+**Factory(`TBAWFactory`) Test 참고 — 3전환**
+
+| 라벨 | 조건 |
+|---|---|
+| `working` | `String(instance.vars.nextAction) == 'working'` |
+| `next` | `String(instance.vars.nextAction) == 'next'` |
+| `finish` | `String(instance.vars.nextAction) == 'finish'` |
+
 ---
 
 ## 3. 대상

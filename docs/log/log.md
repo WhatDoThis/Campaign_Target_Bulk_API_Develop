@@ -2,6 +2,7 @@
 
 ## Log Index
 
+38. 2026-08-21 Status WF Test/Wait 캔버스 가이드
 37. 2026-08-21 GitHub Develop 리모트 동기화
 36. 2026-08-21 batchStatus 재조회 잡을 분리
 35. 2026-08-21 배치 5만·planName·POLL_MAX=0
@@ -41,6 +42,14 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+38. 2026-08-21 Status WF Test/Wait 캔버스 가이드
+Purpose: TBAWStatus 03_Test 전환 조건(working/finish)과 Wait 1m 연결을 statusLogic에 명시한다.
+Changes:
+
+- statusLogic 2.1: 캔버스 연결, Test 2전환, Factory 3전환 참고, next 분기 없음
+- 00_Config 주석에 03_Test 조건식 추가
+Changed files: new_ver/docs/statusLogic.md, new_ver/workflow/status/00_Config.js, docs/log/log.md
 
 37. 2026-08-21 GitHub Develop 리모트 동기화
 Purpose: 큐 키 전환·Factory/스모크 정리·batchStatus 분리 잡을 origin/main에 올린다.
