@@ -6,7 +6,7 @@
 //
 // [Main Functions]
 // 1. fetchChunk / countPending — 확인 대상 Master
-// 2. getStatus — showDetails=true GET + 429/503 재시도
+// 2. getStatus — showDetails=true GET + 429/503 재시도 (STATUS_CPM=5 예산)
 // 3. updateIngest — Master 적재 컬럼만 갱신
 // 4. runChunk — 한 활동에서 CHUNK_SIZE 건
 //
@@ -42,7 +42,7 @@ function BulkStatusChecker() {
   }
   this.authToken = String(BULK_CFG.AUTH_TOKEN || "").replace(/^\s+|\s+$/g, "");
   this.lastCallMs = 0;
-  var cpm = (BULK_CFG.ACCOUNT_CPM * BULK_CFG.SAFETY_RATIO);
+  var cpm = BULK_CFG.STATUS_CPM * BULK_CFG.SAFETY_RATIO;   // (변경) 워커 예산과 분리
   if (!(cpm > 0)) cpm = 1;
   this.MIN_INTERVAL_MS = Math.ceil(60000 / cpm);
   this.schema  = String(BULK_CFG.MASTER_SCHEMA);

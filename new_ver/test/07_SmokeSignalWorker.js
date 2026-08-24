@@ -52,17 +52,6 @@ try {
         + " / custom=" + (w.customAttrs && w.customAttrs.length ? w.customAttrs.join(",") : "(none)")
         + " / url " + w.bulkApiUrl);
 
-  var seg = w.generateSegId();
-  var n = seg.split("|").length;
-  if (typeof BULK_CFG === "undefined") throw new Error("BULK_CFG 없음");
-  if (n < BULK_CFG.SEG_MIN || n > BULK_CFG.SEG_MAX) {
-    throw new Error("segId 개수 범위 이탈: " + n);
-  }
-  if (seg.length > BULK_CFG.SEG_MAX_LEN) {
-    throw new Error("segId 길이 초과: " + seg.length);
-  }
-  logInfo("  segId 샘플 " + n + "개 / " + seg.length + "자");
-
   var r = w.run();
   logInfo("  run 결과 " + r.sent + "건 / " + r.batches + "배치 / 실패 " + r.failed + "건");
   if (r.sent === 0 && r.failed > 0) {

@@ -3,8 +3,8 @@
  * 스키마 I/O, 큐 키(ingestYm+lineNo) offset 분할, 페이로드 규격, apiYn 왕복, dryRun.
  *
  * [Main Functions]
- * 1. Member/Master/Detail 도달성 + 큐 컬럼 + runId 물리 컬럼
- * 2. Master/Detail 쓰기. 링크는 [@master-id] 와 [master/@id] (같은 조인 키)
+ * 1. Member/Master 도달성 + 큐 컬럼 + runId 물리 컬럼
+ * 2. Master/Sample master FK 링크 검증
  * 3. 같은 ingestYm 안 lineNo offset 분할 검증
  * 4. BulkApiWorker dryRun (T_LIB_DRY)
  *
@@ -28,7 +28,8 @@ var ELEMENT = String(instance.vars.smkElement);
 var PENDING = String(instance.vars.smkPending);
 var TAG     = String(instance.vars.smkTag);
 var MASTER  = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
-var DETAIL  = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.SAVE_SCHEMA) : "wootar:testWooTargetBulkApiDetail";
+var MEM_TBL = (typeof BULK_CFG !== "undefined" && BULK_CFG.MEMBER_TABLE)
+  ? String(BULK_CFG.MEMBER_TABLE) : "WootarTestWooTargetSample";
 
 function countOf(schema, cond) {
   var q = "<queryDef schema='" + schema + "' operation='count'>"
@@ -90,7 +91,17 @@ try {
 }
 
 try { countOf(MASTER, ""); ok("Master 조회", true); } catch (e) { ok("Master 조회", false, e.toString()); }
-try { countOf(DETAIL, ""); ok("Detail 조회", true); } catch (e) { ok("Detail 조회", false, e.toString()); }
+
+try {
+  var segProbe = xtk.queryDef.create(
+    <queryDef schema={SCHEMA} operation="select" lineCount="1">
+      <select><node expr="@segId"/></select>
+      <where><condition expr={PENDING}/></where>
+    </queryDef>).ExecuteQuery();
+  var segVal = "";
+  for each (var sp in segProbe[ELEMENT]) segVal = String(sp.@segId || "").replace(/^\s+|\s+$/g, "");
+  ok("Sample.segId 사전 적재", segVal !== "", segVal ? segVal.substring(0, 40) : "비어 있음 — sql/02_seed_segid.sql 실행");
+} catch (e) { ok("Sample.segId 사전 적재", false, e.toString()); }
 
 try {
   sqlGetInt("SELECT count(*) FROM wootartestwootargetbulkapimaster WHERE iattemptcount IS NULL");
@@ -166,49 +177,58 @@ else {
     }
 
     if (masterId > 0) {
+      var linkYm = String(instance.vars.smkMinYm || "");
+      var linkLine = parseInt(instance.vars.smkMinLine, 10) || 0;
+      if (!linkYm || linkLine < 1) {
+        var hq = fetchPendingRow(0);
+        linkYm = hq.ym;
+        linkLine = hq.line;
+      }
+      if (linkYm && linkLine >= 1) {
+      var prevMaster = 0;
       try {
-        xtk.session.DeleteCollection(DETAIL,
-          <where><condition expr="@membershipUid = 'SMK0000001'"/></where>, false);
-      } catch (eDel) {}
+        var prevQ = xtk.queryDef.create(
+          <queryDef schema={SCHEMA} operation="getIfExists">
+            <select><node expr="[@master-id]" alias="@masterFk"/></select>
+            <where>
+              <condition expr={"@ingestYm='" + linkYm + "' AND @lineNo=" + linkLine}/>
+            </where>
+          </queryDef>).ExecuteQuery();
+        prevMaster = parseInt(String(prevQ.@masterFk || ""), 10) || 0;
+      } catch (ePrev) {}
 
-      var dom = new DOMDocument("collection");
-      dom.root.setAttribute("xtkschema", DETAIL);
-      var el = dom.createElement("testWooTargetBulkApiDetail");
-      el.setAttribute("_operation",    "insertOrUpdate");
-      el.setAttribute("_key",          "@ingestYm,@lineNo");
-      el.setAttribute("membershipUid", "SMK0000001");
-      el.setAttribute("ingestYm",      "000000");
-      el.setAttribute("lineNo",        "1");
-      el.setAttribute("segId",         "w01|w02|w03");
-      el.setAttribute("lastModified",  now);
-      el.setAttribute("master-id",     String(masterId));
-      dom.root.appendChild(el);
-      xtk.session.WriteCollection(dom);
+      sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + masterId
+        + " WHERE singestym='" + linkYm + "' AND ilineno=" + linkLine);
 
-      var d = xtk.queryDef.create(
-        <queryDef schema={DETAIL} operation="getIfExists">
+      var s = xtk.queryDef.create(
+        <queryDef schema={SCHEMA} operation="getIfExists">
           <select>
             <node expr="@membershipUid"/>
             <node expr="[@master-id]" alias="@masterFk"/>
             <node expr="[master/@id]" alias="@masterPk"/>
             <node expr="[master/@batchName]" alias="@masterBatchName"/>
           </select>
-          <where><condition expr="@membershipUid = 'SMK0000001'"/></where>
+          <where>
+            <condition expr={"@ingestYm='" + linkYm + "' AND @lineNo=" + linkLine}/>
+          </where>
         </queryDef>).ExecuteQuery();
-      ok("Detail WriteCollection", String(d.@membershipUid) === "SMK0000001");
+      ok("Sample master FK 갱신", String(s.@membershipUid) !== "");
 
-      var fkId = parseInt(String(d.@masterFk || ""), 10) || 0;
-      var pkId = parseInt(String(d.@masterPk || ""), 10) || 0;
-      var linkedName = String(d.@masterBatchName || "");
+      var fkId = parseInt(String(s.@masterFk || ""), 10) || 0;
+      var pkId = parseInt(String(s.@masterPk || ""), 10) || 0;
+      var linkedName = String(s.@masterBatchName || "");
       var linkOk = (fkId === masterId) || (pkId === masterId)
                 || (linkedName === TAG + "-M1");
       var sameKey = (fkId > 0 && pkId > 0) ? (fkId === pkId) : true;
-      var dXml = "";
-      try { dXml = String(d.toXMLString()).substring(0, 280); } catch (eX) {}
-      ok("Detail→Master 링크", linkOk && sameKey,
+      ok("Sample→Master 링크", linkOk && sameKey,
         "[@master-id]=" + fkId + " [master/@id]=" + pkId
-          + " expect=" + masterId + " batchName=" + linkedName
-          + (linkOk && sameKey ? "" : " xml=" + dXml));
+          + " expect=" + masterId + " batchName=" + linkedName);
+
+      sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + prevMaster
+        + " WHERE singestym='" + linkYm + "' AND ilineno=" + linkLine);
+      } else {
+        skip("Sample master FK", "pending 큐 키 없음");
+      }
     }
   } catch (e) { ok("T3 Schema I/O", false, e.toString()); }
 }
@@ -295,8 +315,7 @@ else {
 
     if (vs.length === 0) { skip("T6", "pending 레코드 없음"); }
     else {
-      var tbl = (typeof BULK_CFG !== "undefined" && BULK_CFG.MEMBER_TABLE)
-        ? String(BULK_CFG.MEMBER_TABLE) : "WootarTestWooTargetSample";
+      var tbl = MEM_TBL;
       var inList = "'" + vs.join("','") + "'";
       sqlExec("UPDATE " + tbl + " SET sapiyn='Y' WHERE smembershipuid IN (" + inList + ")");
       ok("sqlExec UPDATE 반영",

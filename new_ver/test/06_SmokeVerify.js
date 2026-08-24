@@ -1,10 +1,10 @@
 /* ============================================================================
- * TBAWSmoke / 06_Verify (스키마 커밋 + Fetch 재시도 + 로그 정리)
- * 1m Wait 이후. 실전송 큐 키 구간의 apiYn=Y, Master 실 URL.
- * Fetch 404는 실패로 두지 않음. Target 값은 Postman으로 재확인.
+ * TBAWSmoke / 06_Verify (스키마 커밋 + Fetch 재시도 + 롤백·정리)
+ * 1m Wait 이후. 실전송 큐 키 구간의 apiYn=Y·master FK, Master 실 URL.
+ * 종료 시 Sample apiYn/master FK 원복 + SMOKE Master 삭제.
  *
  * [Dependencies]
- * HttpClientRequest, xtk.queryDef, xtk.session.DeleteCollection
+ * HttpClientRequest, xtk.queryDef, xtk.session.DeleteCollection, sqlExec
  * ==========================================================================*/
 
 loadLibrary("wootar:testWooBulkApiWorker.js", false);
@@ -17,13 +17,17 @@ function ok(n, c, d) {
   else   { FAIL++; FAILS += (FAILS ? ", " : "") + n; logWarning("  [FAIL] " + n + (d ? " :: " + d : "")); }
 }
 
-var SCHEMA = String(instance.vars.smkSchema);
-var RUN_ID = String(instance.vars.smkRunId || "");
-var lo     = String(instance.vars.smkRealStart || "");
-var hi     = String(instance.vars.smkRealEnd || "");
-var ym     = String(instance.vars.smkRealYm || "");
-var lineS  = parseInt(instance.vars.smkRealLineS, 10) || 0;
-var lineE  = parseInt(instance.vars.smkRealLineE, 10) || 0;
+var SCHEMA  = String(instance.vars.smkSchema);
+var RUN_ID  = String(instance.vars.smkRunId || "");
+var lo      = String(instance.vars.smkRealStart || "");
+var hi      = String(instance.vars.smkRealEnd || "");
+var ym      = String(instance.vars.smkRealYm || "");
+var lineS   = parseInt(instance.vars.smkRealLineS, 10) || 0;
+var lineE   = parseInt(instance.vars.smkRealLineE, 10) || 0;
+var MEM_TBL = (typeof BULK_CFG !== "undefined" && BULK_CFG.MEMBER_TABLE)
+  ? String(BULK_CFG.MEMBER_TABLE) : "WootarTestWooTargetSample";
+var MASTER  = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA)
+  : "wootar:testWooTargetBulkApiMaster";
 
 logInfo("=== V0 실전송 스키마 ===");
 if ((!ym || lineS < 1) || instance.vars.smkTSignal !== "1") {
@@ -43,6 +47,18 @@ if ((!ym || lineS < 1) || instance.vars.smkTSignal !== "1") {
     ok("실전송 큐 키 apiYn=Y", ycnt >= expect,
       "Y=" + ycnt + " / 기대>=" + expect + " / " + ym + " line " + lineS + " ~ " + lineE
         + " / uid " + lo + " ~ " + hi);
+
+    var mq = xtk.queryDef.create(
+      <queryDef schema={SCHEMA} operation="count">
+        <where>
+          <condition expr={"@apiYn = 'Y' AND [@master-id] > 0 AND @ingestYm = '" + ym
+            + "' AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE}/>
+        </where>
+      </queryDef>
+    ).ExecuteQuery();
+    var mcnt = parseInt(mq.@count, 10) || 0;
+    ok("실전송 Sample master FK", mcnt >= expect,
+      "linked=" + mcnt + " / 기대>=" + expect);
   } catch (e) { ok("실전송 apiYn", false, e.toString()); }
 }
 
@@ -76,24 +92,24 @@ else {
   } catch (e) { logWarning("  Fetch 재시도 예외: " + e.toString()); }
 }
 
-logInfo("=== V2 Cleanup ===");
+logInfo("=== V2 Cleanup (Sample 롤백 + Master 삭제) ===");
 if (instance.vars.smkCleanup !== "1") { logInfo("  [SKIP] DO_CLEANUP=false"); }
 else {
   try {
+    if (ym && lineS >= 1 && lineE >= lineS) {
+      sqlExec("UPDATE " + MEM_TBL + " SET sapiyn='N', imasterid=0"
+        + " WHERE singestym='" + ym + "' AND ilineno BETWEEN " + lineS + " AND " + lineE);
+      ok("Sample apiYn/master FK 롤백", true, ym + " line " + lineS + "~" + lineE);
+    }
     if (RUN_ID) {
-      xtk.session.DeleteCollection(String(BULK_CFG.SAVE_SCHEMA),
-        <where><condition expr={"[master/@batchName] LIKE 'SMOKE-" + RUN_ID
-          + "%' OR [master/@batchName] LIKE 'SMOKE-LOCAL-" + RUN_ID + "%'"}/></where>, false);
-      xtk.session.DeleteCollection(String(BULK_CFG.MASTER_SCHEMA),
+      xtk.session.DeleteCollection(MASTER,
         <where><condition expr={"@batchName LIKE 'SMOKE-" + RUN_ID
           + "%' OR @batchName LIKE 'SMOKE-LOCAL-" + RUN_ID + "%'"}/></where>, false);
     }
-    xtk.session.DeleteCollection(String(BULK_CFG.SAVE_SCHEMA),
-      <where><condition expr="@membershipUid LIKE 'SMK%'"/></where>, false);
-    xtk.session.DeleteCollection(String(BULK_CFG.MASTER_SCHEMA),
+    xtk.session.DeleteCollection(MASTER,
       <where><condition expr="@batchName LIKE 'SMOKE%'"/></where>, false);
-    ok("로그 흔적 삭제", true, "Sample apiYn=Y 와 Target 프로필은 유지");
-  } catch (e) { ok("로그 흔적 삭제", false, e.toString()); }
+    ok("SMOKE Master 삭제", true, "Target 프로필은 유지");
+  } catch (e) { ok("롤백·정리", false, e.toString()); }
   try { setOption(String(instance.vars.smkOptKey), "", "smoke worker status"); } catch (e) {}
 }
 

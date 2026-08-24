@@ -15,7 +15,7 @@
 loadLibrary("wootar:testWooBulkApiWorker.js", false);
 
 /* --- [S1] 테스트 스위치 ------------------------------------------------- */
-var T_SCHEMA_IO = true;    // Master/Detail 쓰기·링크·삭제
+var T_SCHEMA_IO = true;    // Master/Sample 쓰기·링크·삭제
 var T_PARTITION = true;    // 워커 큐 키(ingestYm+lineNo) offset 분할 검증
 var T_CURSOR    = true;    // sqlExec apiYn 왕복 (3건, 원복)
 var T_LIB_DRY   = true;    // 같은 캔버스에서 라이브러리 dryRun (미전송)
@@ -68,7 +68,7 @@ instance.vars.smkElement   = (MEMBER_SCHEMA.indexOf(":") > 0) ? MEMBER_SCHEMA.sp
 instance.vars.smkClient    = CLIENT_CODE;
 instance.vars.smkUrl       = "https://" + CLIENT_CODE + ".tt.omtrdc.net/m2/"
                            + CLIENT_CODE + "/v2/profile/batchUpdate";
-instance.vars.smkPending   = "(@apiYn = 'N' OR @apiYn IS NULL) AND @lineNo >= 1 AND @ingestYm != ''";
+instance.vars.smkPending   = "@apiYn = 'N' AND @lineNo >= 1 AND @ingestYm != ''";
 instance.vars.smkLimit     = SMOKE_LIMIT;
 instance.vars.smkRealRows  = SMOKE_REAL_ROWS;
 instance.vars.smkMaxPoll   = MAX_POLL;
@@ -93,4 +93,4 @@ logInfo("  URL = " + instance.vars.smkUrl);
 logInfo("  BATCH_SIZE=" + BATCH_SIZE + " WORKER_COUNT=" + W_COUNT
   + " customAttr=" + ((typeof BULK_CFG !== "undefined" && BULK_CFG.CUSTOM_ATTR) ? BULK_CFG.CUSTOM_ATTR : "(none)"));
 logInfo("  실전송 행수 = " + SMOKE_REAL_ROWS + " (03 Fire → 07, dryRun=false)");
-logInfo("  pending 조건 = 미전송 AND lineNo>=1 AND ingestYm 있음 (백필 전 0건)");
+logInfo("  pending 조건 = apiYn=N AND lineNo>=1 AND ingestYm 있음");

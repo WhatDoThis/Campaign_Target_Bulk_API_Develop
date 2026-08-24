@@ -92,5 +92,10 @@
       <keyfield xpath="@workerName"/>
       <keyfield xpath="@createdDate"/>
     </dbindex>
+
+    <!-- Sample.master revLink=targetSample 역방향 -->
+    <element integrity="neutral" label="전송큐행" name="targetSample"
+             revIntegrity="neutral" revLabel="전송배치" revLink="master"
+             target="wootar:testWooTargetSample" type="link"/>
   </element>
 </srcSchema>

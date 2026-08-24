@@ -19,8 +19,9 @@ function ok(n, c, d) {
 
 var CLIENT = String(instance.vars.smkClient || "");
 var RUN_ID = String(instance.vars.smkRunId || "");
+var SCHEMA = String(instance.vars.smkSchema);
+var ELEMENT = String(instance.vars.smkElement);
 var MASTER = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
-var DETAIL = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.SAVE_SCHEMA) : "wootar:testWooTargetBulkApiDetail";
 instance.vars.smkStatusUrl = "";
 instance.vars.smkFetchUid  = "";
 instance.vars.smkFetchUrl  = "";
@@ -88,7 +89,7 @@ if (instance.vars.smkTApi !== "1") {
     }
 
     var dq = xtk.queryDef.create(
-      <queryDef schema={DETAIL} operation="select" lineCount="5">
+      <queryDef schema={SCHEMA} operation="select" lineCount="5">
         <select><node expr="@membershipUid"/><node expr="@segId"/></select>
         <where>
           <condition expr={"[master/@workerName] = 'SMOKE' AND [master/@batchName] LIKE 'SMOKE-"
@@ -98,7 +99,7 @@ if (instance.vars.smkTApi !== "1") {
     ).ExecuteQuery();
 
     var fetchUid = "", expectSeg = "";
-    for each (var d in dq.testWooTargetBulkApiDetail) {
+    for each (var d in dq[ELEMENT]) {
       fetchUid  = String(d.@membershipUid);
       expectSeg = String(d.@segId);
       break;
@@ -107,7 +108,7 @@ if (instance.vars.smkTApi !== "1") {
     instance.vars.smkExpectSeg = expectSeg;
 
     if (!fetchUid) {
-      ok("실전송 Detail UID", false, "Detail 없음");
+      ok("실전송 Sample UID", false, "apiYn=Y + master FK Sample 없음");
     } else {
       var fetchUrl = "https://" + CLIENT + ".tt.omtrdc.net/rest/v1/profiles/thirdPartyId/"
                    + encodeURIComponent(fetchUid) + "?client=" + encodeURIComponent(CLIENT);

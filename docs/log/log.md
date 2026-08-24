@@ -2,6 +2,12 @@
 
 ## Log Index
 
+44. 2026-08-24 GitHub Develop 리모트 동기화
+43. 2026-08-21 segId 시딩 SQL ACC 리터럴 구간화
+42. 2026-08-21 스모크 테스트 Sample FK 전환
+41. 2026-08-21 migration SQL ACC 방식으로 수정
+40. 2026-08-21 Sample XML dbindex 정리
+39. 2026-08-21 Detail 폐기 Sample FK 전송 최적화
 38. 2026-08-21 Status WF Test/Wait 캔버스 가이드
 37. 2026-08-21 GitHub Develop 리모트 동기화
 36. 2026-08-21 batchStatus 재조회 잡을 분리
@@ -42,6 +48,57 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+44. 2026-08-24 GitHub Develop 리모트 동기화
+Purpose: Detail 폐기·Sample FK 전송·마이그레이션 SQL·스모크/Factory 갱신을 origin/main에 올린다.
+Changes:
+
+- Sample segId+master FK, NTILE Factory, BATCH 150k, MIGRATION.md·sql/
+- Detail/generateSegId 제거, 스모크 Sample FK 전환
+Changed files: docs/log/log.md, new_ver/docs/MIGRATION.md, new_ver/js/*.js, new_ver/schema/*.xml, new_ver/sql/*.sql, new_ver/test/*.js, new_ver/workflow/factory/*.js
+
+43. 2026-08-21 segId 시딩 SQL ACC 리터럴 구간화
+Purpose: ACC SQL 활동은 `:start` 바인드 미지원 → backfillSampleQueue.sql 과 동일 패턴으로 수정.
+Changes:
+
+- 02_seed_segid.sql: membershipUid 500만 건×10 + 잔여, 상태/검증 SELECT
+- MIGRATION.md A4 실행 안내 보강
+Changed files: new_ver/sql/02_seed_segid.sql, new_ver/docs/MIGRATION.md, docs/log/log.md
+
+42. 2026-08-21 스모크 테스트 Sample FK 전환
+Purpose: Detail/generateSegId 제거 아키텍처에 맞게 Phase1 스모크 갱신.
+Changes:
+
+- pending 조건 apiYn=N 단일화, Sample master FK I/O·segId 검증
+- 05/06 Sample 조회, 06 Sample 롤백+Master 삭제 cleanup
+- 07 generateSegId 제거
+Changed files: new_ver/test/*.js, docs/log/log.md
+
+40. 2026-08-21 Sample XML dbindex 정리
+Purpose: 주석 블록 대신 ACC 스키마에 조회용 dbindex를 선언한다.
+Changes:
+
+- idx_queue_pending (ingestYm, lineNo, apiYn) — Factory/워커 pending 스캔
+- idx_membershipUid 유지
+Changed files: new_ver/schema/testWooTargetSample.xml, docs/log/log.md
+
+41. 2026-08-21 migration SQL ACC 방식으로 수정
+Purpose: 인덱스는 구조 업데이트가 관리하므로 SQL DROP 제거, 백필만 유지.
+Changes:
+
+- 01_migration.sql: DROP INDEX 삭제, apiYn/imasterid 백필·검증만
+- MIGRATION.md: partial index·수동 DROP 안내 제거
+Changed files: new_ver/sql/01_migration.sql, new_ver/docs/MIGRATION.md, new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/factory/02_Polling.js, docs/log/log.md
+
+39. 2026-08-21 Detail 폐기 Sample FK 전송 최적화
+Purpose: Detail WriteCollection 제거, Sample segId+master FK, 단일 라운드·NTILE 분할로 5천만 건 처리량 개선.
+Changes:
+
+- Sample segId/master link, partial index SQL, segId 테스트 시딩 SQL
+- worker: sendSlice 50MB 분할, updateSampleSent, BATCH 150k, WORKER 3, STATUS_CPM
+- Factory: ROUND_LIMIT=0, GRAND_TOTAL 50M, NTILE, pendingRows finish
+- docs/MIGRATION.md 배포·롤백 가이드
+Changed files: new_ver/schema/testWooTargetSample.xml, new_ver/schema/testWooTargetBulkApiMaster.xml, new_ver/sql/01_migration.sql, new_ver/sql/02_seed_segid.sql, new_ver/js/testWooBulkApiWorker.js, new_ver/js/testWooBulkApiStatus.js, new_ver/workflow/factory/*.js, new_ver/docs/MIGRATION.md, docs/log/log.md
 
 38. 2026-08-21 Status WF Test/Wait 캔버스 가이드
 Purpose: TBAWStatus 03_Test 전환 조건(working/finish)과 Wait 1m 연결을 statusLogic에 명시한다.

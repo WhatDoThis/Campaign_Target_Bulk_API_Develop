@@ -1,19 +1,15 @@
 /* ============================================================================
- * TBAWFactory / 02_Polling (워커 완료 감지)
+ * TBAWFactory / 02_Polling (워커 완료 + pending 잔량 판정)
  * ============================================================================
- * Option: {runId}|status 또는 {runId}|done|{sent}|{failed}
- * sent 는 큐 행 수. UID 구간과 무관.
- * nextAction: working | next | finish  (03_Test 가 이 문자열을 본다)
- *
- * getOption 2번째 인자는 false (캐시 stale 방지). 설정 조회가 아니라 상태만.
+ * 라운드 완료 후 Sample apiYn='N' 잔량으로 finish/next 결정.
  *
  * [Main Functions]
- * 1. 워커별 Option 파싱 (STRICT runId)
- * 2. ready 타임아웃 / 라운드 타임아웃
- * 3. 누적 sent 로 GrandTotal 판정
+ * 1. Option 파싱 (STRICT runId)
+ * 2. countPending — @apiYn='N' 잔량
+ * 3. nextAction: working | next | finish
  *
  * [Dependencies]
- * getOption(상태 핸드셰이크만)
+ * getOption, xtk.queryDef
  * ==========================================================================*/
 
 function NUM(v, def) { var n = parseInt(v, 10); return isNaN(n) ? (def || 0) : n; }
@@ -22,7 +18,8 @@ if (String(instance.vars.nextAction) === "finish") {
   logInfo("[Polling] 종료 상태 — 폴링 생략");
 } else {
 
-  var W_COUNT     = NUM(instance.vars.WORKER_COUNT, 5);
+  var W_COUNT     = NUM(instance.vars.WORKER_COUNT, 3);
+  var SCHEMA      = String(instance.vars.MEMBER_SCHEMA);
   var OPT_PREFIX  = String(instance.vars.OPT_PREFIX);
   var RUN_ID      = String(instance.vars.runId || "");
   var STRICT      = (String(instance.vars.STRICT_RUNID) === "true");
@@ -34,12 +31,11 @@ if (String(instance.vars.nextAction) === "finish") {
   var poll = NUM(instance.vars.pollCount) + 1;
   instance.vars.pollCount = poll;
 
-  var pending = 0;   // 아직 끝나지 않은 워커 수. 0 이면 라운드 완료
-  var errors  = [];
-  var summary = [];
-  var sentSum = 0;   // 이번 라운드 done 워커의 sent 합. skip/error 는 0
+  var pendingW = 0;
+  var errors   = [];
+  var summary  = [];
+  var sentSum  = 0;
 
-  // # 1. [Parse] 워커 1..W_COUNT 전부 본다. skip 포함해야 잔존 done 을 오인하지 않음.
   var w;
   for (w = 1; w <= W_COUNT; w++) {
     var wName  = String(instance.vars.WORKER_NAME_TPL).replace("{n}", String(w));
@@ -47,16 +43,14 @@ if (String(instance.vars.nextAction) === "finish") {
     var raw = "";
     try { raw = String(getOption(optKey, false) || ""); } catch (e) { raw = ""; }
 
-    // parts[0]=runId, [1]=status, [2]=sent, [3]=failed (done 일 때만)
     var parts  = raw.split("|");
     var optRun = (parts.length > 1) ? parts[0] : "";
     var status = (parts.length > 1) ? parts[1] : parts[0];
     var sent   = (parts.length > 2) ? NUM(parts[2], 0) : 0;
 
-    // STRICT: 이전 라운드 Option 이 남아 있으면 완료로 치지 않고 대기.
     if (STRICT && RUN_ID !== "" && optRun !== RUN_ID) {
       summary.push(wName + "=stale(" + (status || "none") + ")");
-      pending++;
+      pendingW++;
       continue;
     }
 
@@ -66,57 +60,75 @@ if (String(instance.vars.nextAction) === "finish") {
       instance.vars["readyRetry_" + w] = 0;
       if (status === "done") sentSum += sent;
     } else if (status === "error") {
-      // pending 에 넣지 않음 → 라운드는 진행. 실패 행은 apiYn=N 유지
       errors.push(wName);
     } else if (status === "ready") {
-      // 시그널은 갔으나 워커가 running 으로 안 바꿈. WF 미수신/정지 가능성.
       var rc = NUM(instance.vars["readyRetry_" + w]) + 1;
       instance.vars["readyRetry_" + w] = rc;
       if (rc >= MAX_READY) {
         errors.push(wName + "(signal timeout " + rc + ")");
       } else {
-        pending++;
+        pendingW++;
       }
     } else {
-      // running / 빈 값 / 기타 → 진행 중
       instance.vars["readyRetry_" + w] = 0;
-      pending++;
+      pendingW++;
     }
   }
 
   logInfo("[Polling #" + poll + "] " + summary.join(", "));
 
-  // # 2. [Timeout] 라운드가 MAX_RUN 을 넘기면 남은 pending 을 끊고 에러 목록에 넣는다.
-  if (pending > 0 && poll >= MAX_RUN) {
+  if (pendingW > 0 && poll >= MAX_RUN) {
     errors.push("ROUND_TIMEOUT(poll " + poll + ")");
-    pending = 0;
+    pendingW = 0;
   }
 
   if (errors.length > 0) {
     var msg = "[Polling] 워커 이상: " + errors.join(", ");
     if (ABORT_ERR) {
-      logError(msg + " → 워크플로우 중단");
+      logError(msg + " → 중단");
       throw new Error(msg);
     }
-    logWarning(msg + " → 제외하고 계속 (apiYn=N 잔여는 다음 라운드)");
+    logWarning(msg + " → 계속 (apiYn=N 잔여는 다음 라운드)");
   }
 
-  // # 3. [Next] pending>0 이면 Wait 후 재폴링. 아니면 sent 누적 후 next/finish.
-  if (pending > 0) {
+  if (pendingW > 0) {
     instance.vars.nextAction = "working";
-    logInfo("[Polling] 진행 중 (" + pending + "개 대기)");
+    logInfo("[Polling] 워커 진행 중 (" + pendingW + "개)");
   } else {
     var processed = NUM(instance.vars.globalProcessed) + sentSum;
     instance.vars.globalProcessed = processed;
-    logInfo("=== Round " + instance.vars.round + " 완료 / 이번 sent="
-      + sentSum + " / 누적 " + processed + "건 ===");
+    logInfo("=== Round " + instance.vars.round + " 워커 완료 / sent="
+      + sentSum + " / 누적 " + processed + " ===");
 
-    if (GRAND_TOTAL > 0 && processed >= GRAND_TOTAL) {
+    // (변경) sent 누적만으로 finish 하지 않음. Sample pending 잔량 기준
+    var pendingRows = -1;
+    try {
+      var c = xtk.queryDef.create(
+        <queryDef schema={SCHEMA} operation="count">
+          <where><condition expr="@apiYn = 'N'"/></where>
+        </queryDef>
+      ).ExecuteQuery();
+      pendingRows = parseInt(c.@count, 10) || 0;
+    } catch (eCnt) {
+      logError("[Polling] pending count 실패: " + (eCnt.message || eCnt));
+    }
+
+    instance.vars.pendingRows = pendingRows;
+    logInfo("[Polling] Sample pending=" + pendingRows);
+
+    if (pendingRows === 0) {
       instance.vars.nextAction = "finish";
-      logInfo("[Polling] 전체 상한(" + GRAND_TOTAL + ") 도달 → finish");
+      logInfo("[Polling] 미전송 0건 → finish");
+    } else if (GRAND_TOTAL > 0 && processed >= GRAND_TOTAL) {
+      instance.vars.nextAction = "finish";
+      logWarning("[Polling] GRAND_TOTAL(" + GRAND_TOTAL + ") 도달. "
+        + "미전송 " + pendingRows + "건 잔존 → 다음 실행");
+    } else if (pendingRows < 0) {
+      instance.vars.nextAction = "next";
+      logWarning("[Polling] count 실패 → next (재분배)");
     } else {
       instance.vars.nextAction = "next";
-      logInfo("[Polling] 다음 라운드");
+      logInfo("[Polling] 미전송 " + pendingRows + "건 → next");
     }
   }
 }
