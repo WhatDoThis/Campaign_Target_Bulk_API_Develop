@@ -25,6 +25,12 @@ SELECT COUNT(*) FROM wootartestwootargetsample
 WHERE ssegid IS NULL OR btrim(ssegid) = '';
 ```
 
+### 1-b) lineNo 백필 완료 (결과 0 이어야 함)
+```sql
+SELECT COUNT(*) FROM wootartestwootargetsample WHERE ilineno IS NULL;
+```
+`ilineno IS NULL` 이면 `(NULL % 100)` 시딩에서 조용히 누락됨. `backfillSampleQueue.sql` 선행 필수.
+
 ### 2) ingestYm 분포
 ```sql
 SELECT singestym, COUNT(*) FROM wootartestwootargetsample
@@ -46,6 +52,11 @@ EXPLAIN SELECT ilineno FROM wootartestwootargetsample
 WHERE sapiyn='N' AND singestym='YYYYMM' ORDER BY ilineno LIMIT 10;
 ```
 `idx_pending_queue` 사용이 보여야 한다. Seq Scan 이면 구조 업데이트 재실행.
+
+### 5) (선택) 부분 인덱스 — FIX-20-D
+
+전송 완료(`sapiyn='Y'`) 행이 pending 인덱스에서 자동 제외되어 조회가 빨라질 수 있다.
+`01_migration.sql` 말미 주석의 DDL을 참고. XML `idx_pending_queue` 와 역할 중복 → EXPLAIN 실측 후 하나만 유지.
 
 ---
 
@@ -69,7 +80,7 @@ WHERE sapiyn='N' AND singestym='YYYYMM' ORDER BY ilineno LIMIT 10;
 
 | # | Campaign 내부명 | 작업 | 파일 |
 |---|---|---|---|
-| B1 | `wootar:testWooBulkApiWorker.js` | **재게시** (Detail 제거, BATCH 150k, WORKER 3) | `js/testWooBulkApiWorker.js` |
+| B1 | `wootar:testWooBulkApiWorker.js` | **재게시** (Detail 제거, BATCH 80k, WORKER 3) | `js/testWooBulkApiWorker.js` |
 | B2 | `wootar:testWooBulkApiStatus.js` | **재게시** (STATUS_CPM 스로틀) | `js/testWooBulkApiStatus.js` |
 
 ### Phase C — 워크플로우 JS
@@ -126,7 +137,7 @@ WHERE sapiyn='N' AND singestym='YYYYMM' ORDER BY ilineno LIMIT 10;
 ```
 1. Sample + Master 스키마 구조 업데이트
 2. sql/01_migration.sql 실행
-3. sql/02_seed_segid.sql — SELECT(0) 확인 후 UPDATE 10구간+잔여를 **한 문장씩** 실행 (ACC는 `:start` 바인드 미지원). 완료 후 VACUUM ANALYZE
+3. sql/02_seed_segid.sql — SELECT(0)에서 need_seg=0·need_backfill=0 확인 후 tmp_seg_combo 생성+UPDATE를 **같은 세션**에서 한 문장씩 실행. 완료 후 VACUUM ANALYZE
 4. B1 → B2 라이브러리 재게시
 5. C1~C3 Factory JS 붙여넣기
 6. D1 Factory Wait 15초 변경
@@ -210,7 +221,7 @@ SELECT COUNT(*) FROM WootarTestWooTargetSample
 
 | 키 | 이전 | 이후 |
 |---|---|---|
-| `BATCH_SIZE` | 50,000 | **150,000** (로그로 재조정) |
+| `BATCH_SIZE` | 50,000 | **80,000** (메모리·50MB 한도 균형, 로그로 재조정) |
 | `WORKER_COUNT` | 5 | **3** |
 | `SAFETY_RATIO` | 0.7 | **0.9** |
 | `STATUS_CPM` | (없음) | **5** |

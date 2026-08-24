@@ -47,8 +47,8 @@ var BULK_CFG = {
 
 
     // ---- 처리 규모 ----
-    // BATCH_SIZE: 실측 로그(행당 바이트)로 재조정. 50MB / 행당~230B ≈ 227k, 35% 마진 → 150k
-    BATCH_SIZE        : 150000,
+    // BATCH_SIZE: 50MB/500k 한도 내. 메모리 피크 완화 — target-limits
+    BATCH_SIZE        : 80000,   // (변경) 150000 → 80000
     MAX_BATCH_ROWS      : 500000,           // profile-bulk-api 공식 행 상한 (하드 가드)
     LINE_NO_MAX         : 2000000000,       // lineNo 가드. ACC long 최대보다 여유. wrap 금지
 
@@ -159,7 +159,7 @@ function BulkApiWorker(p) {
   }
 
   // 스로틀 = 60초 / ((ACCOUNT_CPM - STATUS_CPM) × SAFETY_RATIO / 워커수)
-  //   워커 3개 기준 약 13.3s. Status 동시 실행 시 합계 503 방지
+  // (변경) 주석 오류 정정. SAFETY_RATIO 0.9 기준 실제값은 약 4,445ms (기존 "약 13.3s" 는 0.7 시절 잔재)
   var workerCount = parseInt(p.workerCount, 10) || BULK_CFG.WORKER_COUNT;
   if (workerCount < 1) workerCount = 1;
   var wmax = parseInt(BULK_CFG.WORKER_MAX, 10) || 15;
@@ -649,33 +649,43 @@ BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLi
     return 0;
   }
 
-  sqlExec(
-    "UPDATE " + BULK_CFG.MEMBER_TABLE
+  var usql = "UPDATE " + BULK_CFG.MEMBER_TABLE
     + " SET sapiyn='Y', imasterid=" + mid
     + " WHERE singestym='" + this.sqlLit(ym) + "'"
     + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
-    + " AND sapiyn='N'"
-  );
+    + " AND sapiyn='N'";
 
-  // (변경) sqlExec는 영향 행 수 미반환. 역조회로 rowCount와 대조
-  var vsql = "SELECT COUNT(*) AS n FROM " + BULK_CFG.MEMBER_TABLE
-    + " WHERE singestym='" + this.sqlLit(ym) + "'"
-    + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
-    + " AND sapiyn='Y' AND imasterid=" + mid;
-  try {
-    var vrs = sqlSelect(vsql, false);
-    var vn = 0;
-    if (vrs && vrs.row !== undefined) {
-      for each (var vr in vrs.row) { vn = parseInt(String(vr.@n), 10) || 0; }
-    } else if (vrs && vrs.@n !== undefined) {
-      vn = parseInt(String(vrs.@n), 10) || 0;
+  // (변경) sqlExec 는 UPDATE 영향 행 수를 반환 — f-sqlExec.html
+  var affected = sqlExec(usql);
+  var n = parseInt(affected, 10);
+
+  if (!isNaN(n)) {
+    // (변경) 역조회 COUNT 제거. 반환값으로 즉시 검증
+    if (n !== rowCount) {
+      logWarning("[" + this.workerName + "] UPDATE 행 수 불일치 기대=" + rowCount
+        + " 실제=" + n + " (line " + fromLine + "~" + toLine + ")");
     }
-    if (vn !== rowCount) {
-      logWarning("[" + this.workerName + "] Sample 갱신 불일치 기대=" + rowCount
-        + " 실제=" + vn + " (" + ym + " line " + fromLine + "~" + toLine + ")");
+  } else {
+    // (변경) 반환 미지원 빌드 대비 fallback — 이때만 FIX-15-B 역조회 수행
+    var vsql = "SELECT COUNT(*) AS n FROM " + BULK_CFG.MEMBER_TABLE
+      + " WHERE singestym='" + this.sqlLit(ym) + "'"
+      + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
+      + " AND sapiyn='Y' AND imasterid=" + mid;
+    try {
+      // (변경) sqlSelect(format, query) 시그니처 준수 — f-sqlSelect.html
+      var vrs = sqlSelect("row,@n:long", vsql);
+      var vn = 0;
+      // (변경) E4X 빈 XMLList 도 undefined 가 아님 → length() 로 판정
+      if (vrs && vrs.row.length() > 0) {
+        for each (var vr in vrs.row) { vn = parseInt(String(vr.@n), 10) || 0; }
+      }
+      if (vn !== rowCount) {
+        logWarning("[" + this.workerName + "] Sample 갱신 불일치 기대=" + rowCount
+          + " 실제=" + vn + " (" + ym + " line " + fromLine + "~" + toLine + ")");
+      }
+    } catch (eV) {
+      logWarning("[" + this.workerName + "] 갱신 검증 조회 실패: " + (eV.message || eV));
     }
-  } catch (eV) {
-    logWarning("[" + this.workerName + "] 갱신 검증 조회 실패: " + (eV.message || eV));
   }
 
   return 1;

@@ -9,23 +9,28 @@ SELECT
   COUNT(*) AS total,
   COUNT(*) FILTER (
     WHERE ssegid IS NULL OR btrim(ssegid) = ''
-  ) AS need_seg
+  ) AS need_seg,
+  -- (변경) ilineno IS NULL 은 (NULL % 100) 때문에 시딩에서 조용히 누락됨.
+  --        backfillSampleQueue.sql 선행 여부 확인용
+  COUNT(*) FILTER (WHERE ilineno IS NULL) AS need_backfill
 FROM wootartestwootargetsample;
 
--- (변경) 행별 md5 50회 → 조합 100개 사전 생성 + 모듈로 매핑
--- 결정론 유지: 같은 lineNo 는 항상 같은 조합
+-- (변경) 상관 서브쿼리 → CROSS JOIN + row_number. LATERAL 없이 외부 컬럼 참조 불가
+-- 100 × 50 = 5,000행 카테시안. 즉시 완료. 결정론 유지(같은 lineNo → 같은 조합)
 DROP TABLE IF EXISTS tmp_seg_combo;
 CREATE TEMP TABLE tmp_seg_combo AS
-SELECT
-  c.idx,
-  (SELECT string_agg(t.tag, '|')
-   FROM (
-     SELECT 'w' || LPAD(g::text, 2, '0') AS tag
-     FROM generate_series(1, 50) g
-     ORDER BY md5(g::text || c.idx::text)
-     LIMIT 20
-   ) t) AS segs
-FROM generate_series(0, 99) c(idx);
+SELECT idx, string_agg(tag, '|') AS segs
+FROM (
+  SELECT c.idx,
+         'w' || LPAD(g::text, 2, '0') AS tag,
+         row_number() OVER (
+           PARTITION BY c.idx ORDER BY md5(g::text || c.idx::text)
+         ) AS rn
+  FROM generate_series(0, 99) c(idx)
+  CROSS JOIN generate_series(1, 50) g
+) s
+WHERE rn <= 20
+GROUP BY idx;
 
 CREATE UNIQUE INDEX ON tmp_seg_combo (idx);
 

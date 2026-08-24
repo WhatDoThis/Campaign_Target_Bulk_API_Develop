@@ -19,6 +19,9 @@ function ok(n, c, d) {
 
 var CLIENT = String(instance.vars.smkClient || "");
 var RUN_ID = String(instance.vars.smkRunId || "");
+var ym     = String(instance.vars.smkRealYm || "");
+var lineS  = parseInt(instance.vars.smkRealLineS, 10) || 0;
+var lineE  = parseInt(instance.vars.smkRealLineE, 10) || 0;
 var SCHEMA = String(instance.vars.smkSchema);
 var ELEMENT = String(instance.vars.smkElement);
 var MASTER = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
@@ -91,12 +94,16 @@ if (instance.vars.smkTApi !== "1") {
          "status=" + st + " recordCount=" + recCnt);
     }
 
+    // (변경) 인덱스 (apiYn, ingestYm, lineNo) 선행 조건 추가. 링크 단독 조건은 풀스캔
+    var scond = "@apiYn='Y' AND @ingestYm='" + ym + "'"
+      + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE
+      + " AND [master/@batchName] LIKE 'SMOKE-" + RUN_ID + "-%'"
+      + " AND [master/@batchName] NOT LIKE '%-M1'";
     var dq = xtk.queryDef.create(
       <queryDef schema={SCHEMA} operation="select" lineCount="5">
         <select><node expr="@membershipUid"/><node expr="@segId"/></select>
         <where>
-          <condition expr={"[master/@workerName] = 'SMOKE' AND [master/@batchName] LIKE 'SMOKE-"
-            + RUN_ID + "-%' AND [master/@batchName] NOT LIKE '%-M1'"}/>
+          <condition expr={scond}/>
         </where>
       </queryDef>
     ).ExecuteQuery();

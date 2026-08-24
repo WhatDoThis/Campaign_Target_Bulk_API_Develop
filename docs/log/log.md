@@ -2,6 +2,8 @@
 
 ## Log Index
 
+48. 2026-08-24 GitHub Develop 리모트 동기화
+47. 2026-08-24 FIX-15~20 : sqlSelect 시그니처 / sqlExec 반환값 / 고아 버킷 인접 병합 / BATCH_SIZE / 시딩 SQL / 잔여 최적화
 46. 2026-08-24 GitHub Develop 리모트 동기화
 45. 2026-08-24 검수 결함 수정 (NTILE LIMIT·폴링 count·인덱스 순서)
 44. 2026-08-24 GitHub Develop 리모트 동기화
@@ -50,6 +52,28 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+48. 2026-08-24 GitHub Develop 리모트 동기화
+Purpose: FIX-15~20 검수 수정( sqlSelect/sqlExec·고아 버킷·BATCH 80k·MIN/MAX 분할)을 origin/main에 올린다.
+Changes:
+
+- sqlSelect(format,query)·sqlExec 반환값 검증, 인접 고아 버킷 병합
+- NTILE→MIN/MAX splitBounds, BATCH_SIZE 80k, segId CROSS JOIN 시딩
+Changed files: docs/log/log.md, new_ver/docs/MIGRATION.md, new_ver/js/testWooBulkApiWorker.js, new_ver/sql/*.sql, new_ver/test/05_SmokeApiTest.js, new_ver/workflow/factory/*.js
+
+47. 2026-08-24 FIX-15~20 : sqlSelect 시그니처 / sqlExec 반환값 / 고아 버킷 인접 병합 / BATCH_SIZE / 시딩 SQL / 잔여 최적화
+Purpose: sqlSelect/sqlExec 오용 수정, 고아 버킷 겹침 방지, 메모리·시딩·스모크·분할 최적화.
+Changes:
+
+- FIX-15: sqlSelect(format, query) 시그니처 준수, rs.row.length() 판정
+- FIX-16: sqlExec 반환값으로 UPDATE 검증, 역조회 COUNT는 fallback만
+- FIX-17: 고아 버킷 인접 병합 + 정렬 + 겹침 재검증
+- FIX-18: BATCH_SIZE 150000→80000, 스로틀 주석 4,445ms 정정
+- FIX-19: 02_seed_segid CROSS JOIN+row_number, need_backfill 점검
+- FIX-20: MIN/MAX 분할, 스모크 scond 인덱스 선행, MAX_ROUND=200, 부분 인덱스 DDL 주석, MIGRATION 갱신
+Changed files: new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/js/testWooBulkApiWorker.js,
+  new_ver/workflow/factory/02_Polling.js, new_ver/test/05_SmokeApiTest.js, new_ver/sql/02_seed_segid.sql,
+  new_ver/sql/01_migration.sql, new_ver/docs/MIGRATION.md, docs/log/log.md
 
 46. 2026-08-24 GitHub Develop 리모트 동기화
 Purpose: 검수 결함 수정(NTILE·폴링·인덱스·스로틀·스모크)을 origin/main에 올린다.

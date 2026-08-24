@@ -121,9 +121,17 @@ if (String(instance.vars.nextAction) === "finish") {
     logInfo("[Polling] pending 존재=" + countStatus);
 
     // (변경) -1(조회실패)을 최우선 처리. dead branch 제거
+    // (변경) count 실패 반복 시 무한 라운드 방지
+    var MAX_ROUND = 200;
+    var roundNo = parseInt(instance.vars.round, 10) || 0;
     if (countStatus < 0) {
-      instance.vars.nextAction = "next";
-      logWarning("[Polling] pending 조회 실패 → next (재분배)");
+      if (roundNo >= MAX_ROUND) {
+        logError("[Polling] 라운드 상한 " + MAX_ROUND + " 초과 → 강제 종료");
+        instance.vars.nextAction = "finish";
+      } else {
+        instance.vars.nextAction = "next";
+        logWarning("[Polling] pending 조회 실패 → next (재분배)");
+      }
     } else if (countStatus === 0) {
       instance.vars.nextAction = "finish";
       logInfo("[Polling] 미전송 0건 → finish");

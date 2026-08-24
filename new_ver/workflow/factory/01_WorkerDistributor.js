@@ -1,13 +1,13 @@
 /* ============================================================================
- * TBAWFactory / 01_WorkerDistributor (NTILE 분할 + PostEvent)
+ * TBAWFactory / 01_WorkerDistributor (구간 분할 + PostEvent)
  * ============================================================================
- * pending @apiYn='N' 을 NTILE 로 워커 구간 분할. OFFSET 대용량 스캔 제거.
+ * pending @apiYn='N' 을 lineNo MIN/MAX 등분으로 워커 구간 분할.
  *
  * PostEvent vars: workerName, ingestYm, lineStart, lineEnd, runId, optKey, workerCount
  *
  * [Main Functions]
  * 1. pending 첫 행·remaining 상한
- * 2. sqlSelect NTILE 경계
+ * 2. sqlSelect MIN/MAX 경계
  * 3. 워커 WF PostEvent
  *
  * [Dependencies]
@@ -78,54 +78,56 @@ function fetchUidAtLine(ym, lineNo) {
   return "";
 }
 
-// (변경) NTILE 단일 스캔. OFFSET 5천만 회피
-function ntileBounds(ym, wCount, remaining) {
+// (변경) NTILE 전체 정렬 → 인덱스 양끝 조회. 밀리초 단위 — FIX-20-B
+function splitBounds(ym, wCount, remaining) {
   if (!TABLE) throw new Error("[Distributor] MEMBER_TABLE 미설정");
-  // (변경) LIMIT을 NTILE 안쪽으로. PG는 NTILE이 LIMIT보다 먼저 평가됨
-  var sql = "SELECT MIN(t.ilineno) AS ls, MAX(t.ilineno) AS le, COUNT(*) AS cnt "
-    + "FROM ("
-    + "  SELECT q.ilineno, NTILE(" + wCount + ") OVER (ORDER BY q.ilineno) AS b"
-    + "  FROM ("
-    + "    SELECT s.ilineno"
-    + "    FROM " + TABLE + " s"
-    + "    WHERE s.sapiyn='N' AND s.singestym='" + sqlLit(ym) + "'"
-    + "    ORDER BY s.ilineno"
-    + "    LIMIT " + remaining
-    + "  ) q"
-    + ") t GROUP BY t.b ORDER BY t.b";
+  var sql = "SELECT MIN(s.ilineno) AS lo, MAX(s.ilineno) AS hi"
+    + " FROM " + TABLE + " s"
+    + " WHERE s.sapiyn='N' AND s.singestym='" + sqlLit(ym) + "'";
 
   var bounds = [];
   var rs;
   try {
-    rs = sqlSelect(sql, false);
+    // (변경) sqlSelect(format, query) 시그니처 준수 — f-sqlSelect.html
+    rs = sqlSelect("row,@lo:long,@hi:long", sql);
   } catch (eSql) {
-    throw new Error("[Distributor] NTILE sqlSelect 실패: " + (eSql.message || eSql));
+    throw new Error("[Distributor] bounds sqlSelect 실패: " + (eSql.message || eSql));
   }
 
-  if (rs && rs.row !== undefined) {
+  var lo = 0;
+  var hi = 0;
+  // (변경) E4X 빈 XMLList 도 undefined 가 아님 → length() 로 판정
+  if (rs && rs.row.length() > 0) {
     for each (var row in rs.row) {
-      var ls = parseInt(String(row.@ls || row.@LS || 0), 10) || 0;
-      var le = parseInt(String(row.@le || row.@LE || 0), 10) || 0;
-      var cnt = parseInt(String(row.@cnt || row.@CNT || 0), 10) || 0;
-      if (ls >= 1 && le >= ls) {
-        bounds.push({ ym: ym, s: ls, e: le, cnt: cnt });
-      }
+      lo = parseInt(String(row.@lo || row.@LO || 0), 10) || 0;
+      hi = parseInt(String(row.@hi || row.@HI || 0), 10) || 0;
     }
-  } else if (rs && rs.@ls !== undefined) {
-    var ls2 = parseInt(String(rs.@ls), 10) || 0;
-    var le2 = parseInt(String(rs.@le), 10) || 0;
-    if (ls2 >= 1 && le2 >= ls2) {
-      bounds.push({ ym: ym, s: ls2, e: le2, cnt: NUM(rs.@cnt, 0) });
+  }
+  if (lo < 1 || hi < lo) return bounds;
+
+  var effHi = hi;
+  if (remaining > 0 && (hi - lo + 1) > remaining) {
+    effHi = lo + remaining - 1;
+  }
+
+  var span = effHi - lo + 1;
+  var wi;
+  for (wi = 0; wi < wCount; wi++) {
+    var s = lo + Math.floor(span * wi / wCount);
+    var e = lo + Math.floor(span * (wi + 1) / wCount) - 1;
+    if (wi === wCount - 1) e = effHi;
+    if (s >= 1 && e >= s) {
+      bounds.push({ ym: ym, s: s, e: e, cnt: e - s + 1, idx: wi });
     }
   }
 
   // (변경) 버킷 수 부족 = 구간 소실 신호
   if (bounds.length < wCount) {
-    logWarning("[Distributor] NTILE 버킷 " + bounds.length + "/" + wCount
+    logWarning("[Distributor] bounds " + bounds.length + "/" + wCount
       + " — remaining=" + remaining);
   }
 
-  // (변경) 인접 버킷 경계 겹침 검증. NTILE은 연속 분할이므로 겹치면 SQL 이상
+  // (변경) 인접 버킷 경계 겹침 검증
   var vi;
   for (vi = 1; vi < bounds.length; vi++) {
     if (bounds[vi].s <= bounds[vi - 1].e) {
@@ -138,7 +140,7 @@ function ntileBounds(ym, wCount, remaining) {
   for (bi = 0; bi < bounds.length; bi++) {
     bounds[bi].su = fetchUidAtLine(ym, bounds[bi].s);
     bounds[bi].eu = fetchUidAtLine(ym, bounds[bi].e);
-    logInfo("[Distributor] NTILE bucket " + (bi + 1) + " line "
+    logInfo("[Distributor] bucket " + (bi + 1) + " line "
       + bounds[bi].s + "~" + bounds[bi].e + " cnt=" + bounds[bi].cnt);
   }
   return bounds;
@@ -165,7 +167,7 @@ var remaining = limit;
 logInfo("[Distributor] ym=" + head.ym + " head line=" + head.line
   + " / 이번 라운드 최대 " + remaining + "건");
 
-var bounds = ntileBounds(head.ym, W_COUNT, remaining);
+var bounds = splitBounds(head.ym, W_COUNT, remaining);
 var runId  = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S") + "R" + round;
 
 // (변경) state 의미 통일. 11 = 시작됨. 13 = 일시중지 / 20 = 중지
@@ -199,20 +201,63 @@ for (w = 0; w < W_COUNT; w++) {
   if (!wfStarted(wWf)) {
     setOption(optKey, runId + "|skip", "bulk worker status");
     logWarning("  " + wName + " : " + wWf + " 미시작 → 버킷 이월");
-    orphan.push(bounds[w]);
+    orphan.push({ b: bounds[w], idx: w });
     continue;
   }
-  liveJobs.push({ name: wName, wf: wWf, key: optKey, b: bounds[w] });
+  liveJobs.push({ name: wName, wf: wWf, key: optKey, b: bounds[w], idx: w });
 }
 
-// (변경) 고아 버킷을 라운드로빈 병합. 구간을 min~max로 확장
+// (변경) 라운드로빈 → 인접 병합. 비인접 결합 시 구간 겹침 발생
 var oi;
 for (oi = 0; oi < orphan.length; oi++) {
   if (liveJobs.length === 0) break;
-  var tgt = liveJobs[oi % liveJobs.length];
-  if (orphan[oi].s < tgt.b.s) tgt.b.s = orphan[oi].s;
-  if (orphan[oi].e > tgt.b.e) tgt.b.e = orphan[oi].e;
-  logInfo("  고아 버킷 " + orphan[oi].s + "~" + orphan[oi].e + " → " + tgt.name);
+  var ob   = orphan[oi];
+  var oidx = ob.idx;
+  var tgt  = null;
+  var li;
+  for (li = 0; li < liveJobs.length; li++) {
+    if (liveJobs[li].idx < oidx) {
+      if (!tgt || liveJobs[li].idx > tgt.idx) tgt = liveJobs[li];
+    }
+  }
+  if (tgt) {
+    if (ob.b.e > tgt.b.e) tgt.b.e = ob.b.e;
+  } else {
+    var nextLive = null;
+    for (li = 0; li < liveJobs.length; li++) {
+      if (liveJobs[li].idx > oidx) {
+        if (!nextLive || liveJobs[li].idx < nextLive.idx) nextLive = liveJobs[li];
+      }
+    }
+    tgt = nextLive;
+    if (tgt && ob.b.s < tgt.b.s) tgt.b.s = ob.b.s;
+  }
+  if (tgt) {
+    logInfo("  고아 버킷 병합 b" + oidx + " → " + tgt.name
+      + " 구간 " + tgt.b.s + "~" + tgt.b.e);
+  }
+}
+
+// (변경) 병합 후 b.s 오름차순 정렬
+var si;
+for (si = 0; si < liveJobs.length - 1; si++) {
+  var sj;
+  for (sj = si + 1; sj < liveJobs.length; sj++) {
+    if (liveJobs[sj].b.s < liveJobs[si].b.s) {
+      var tmpJ = liveJobs[si];
+      liveJobs[si] = liveJobs[sj];
+      liveJobs[sj] = tmpJ;
+    }
+  }
+}
+
+// (변경) 병합 후 겹침 재검증
+var vj;
+for (vj = 1; vj < liveJobs.length; vj++) {
+  if (liveJobs[vj].b.s <= liveJobs[vj - 1].b.e) {
+    throw new Error("[Distributor] 병합 후 버킷 겹침 b" + vj + " s=" + liveJobs[vj].b.s
+      + " <= b" + (vj - 1) + " e=" + liveJobs[vj - 1].b.e);
+  }
 }
 
 var fireN  = liveJobs.length;
