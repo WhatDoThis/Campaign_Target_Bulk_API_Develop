@@ -2,6 +2,11 @@
 
 ## Log Index
 
+53. 2026-08-24 GitHub Develop 리모트 동기화
+52. 2026-08-24 FIX-21~29 — 산술 분할 후속 결함 정리 및 가드 보강
+51. 2026-08-24 FIX-24~26 : PENDING_COND_SQL 단일화·무진행 가드·uid 범위 조회
+50. 2026-08-24 FIX-21~23 : splitBounds 밀집도 보정·연속성 검증·부분 인덱스 필수
+49. 2026-08-24 new_ver 전체 히스토리형 주석 → 기능·가드레일 설명 정리
 48. 2026-08-24 GitHub Develop 리모트 동기화
 47. 2026-08-24 FIX-15~20 : sqlSelect 시그니처 / sqlExec 반환값 / 고아 버킷 인접 병합 / BATCH_SIZE / 시딩 SQL / 잔여 최적화
 46. 2026-08-24 GitHub Develop 리모트 동기화
@@ -52,6 +57,55 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+53. 2026-08-24 GitHub Develop 리모트 동기화
+Purpose: FIX-21~29 산술 분할·가드·부분 인덱스·주석 정리를 origin/main에 올린다.
+Changes:
+
+- splitBounds 밀집도 보정, 무진행/stall 가드, PENDING_COND_SQL 단일화
+- 부분 인덱스 필수, MIGRATION·스모크·Status WF 동기화
+Changed files: docs/log/log.md, new_ver/docs/MIGRATION.md, new_ver/js/*.js, new_ver/schema/testWooTargetSample.xml, new_ver/sql/*.sql, new_ver/test/*.js, new_ver/workflow/**
+
+52. 2026-08-24 FIX-21~29 — 산술 분할 후속 결함 정리 및 가드 보강
+Purpose: FIX-20-B NTILE 제거 후 파생 결함·무한 루프 공백 정리, 문서·Config 일원화.
+Changes:
+
+- FIX-21 [CRITICAL] splitBounds COUNT(*) + density 기반 remaining 환산
+- FIX-22 [HIGH] 버킷 검증 겹침 → 연속성
+- FIX-23 [HIGH] idx_sample_pending_partial 필수 승격 (psql CONCURRENTLY)
+- FIX-24 [MEDIUM] PENDING_COND_SQL, splitBounds SQL 단일 소스
+- FIX-25 [MEDIUM] 워커 lastLine 무진행 + 팩토리 stallCount 조기 finish
+- FIX-26 [MEDIUM] fetchUidFromLine 범위 조회
+- FIX-27 [LOW] MAX_ROUND / MAX_STALL Config 이관
+- FIX-28 [LOW] 발사 로그 uid 병합 후 재조회 (su/eu stale 제거)
+- FIX-29 [DOC] MIGRATION.md 갱신
+Changed files: new_ver/workflow/factory/00_Config.js, 01_WorkerDistributor.js, 02_Polling.js, new_ver/js/testWooBulkApiWorker.js, new_ver/sql/01_migration.sql, new_ver/docs/MIGRATION.md, docs/log/log.md
+
+51. 2026-08-24 FIX-24~26 : PENDING_COND_SQL 단일화·무진행 가드·uid 범위 조회
+Purpose: pending 조건 이중 정의 제거, 워커/팩토리 무진행 루프 방어, 산술 분할 버킷 uid 로그 적중률 개선.
+Changes:
+
+- FIX-24: PENDING_COND / PENDING_COND_SQL Config 쌍, splitBounds SQL 단일 소스
+- FIX-25: run() NO_PROGRESS_MAX, 02_Polling stallCount>=3 finish
+- FIX-26: fetchUidFromLine 범위 조회, 버킷당 2회→1회
+Changed files: new_ver/workflow/factory/00_Config.js, 01_WorkerDistributor.js, 02_Polling.js, new_ver/js/testWooBulkApiWorker.js, docs/log/log.md
+
+50. 2026-08-24 FIX-21~23 : splitBounds 밀집도 보정·연속성 검증·부분 인덱스 필수
+Purpose: 산술 분할 시 remaining 과소/과대 추정 수정, 의미 없는 겹침 검증을 연속성 검증으로 교체, COUNT 성능을 위한 partial index 필수화.
+Changes:
+
+- FIX-21: splitBounds SQL에 COUNT(*), density 기반 effHi 보정
+- FIX-22: bounds/liveJobs 겹침 검증 → lineNo 연속성 검증
+- FIX-23: idx_sample_pending_partial CREATE INDEX CONCURRENTLY 실행문 승격 (psql 단독)
+Changed files: new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/sql/01_migration.sql, docs/log/log.md
+
+49. 2026-08-24 new_ver 전체 히스토리형 주석 → 기능·가드레일 설명 정리
+Purpose: (변경)·FIX·Phase·폐기 등 변경 이력 주석 제거. 기능 설명·가드레일만 남김.
+Changes:
+
+- testWooBulkApiWorker.js: Master/로그 스키마·queryMembers·updateSampleSent 등 기능 주석
+- Factory·Status·Smoke·SQL·Sample XML: (변경) 제거, 인덱스·WF state·cleanup 등 가드레일로 교체
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/js/testWooBulkApiStatus.js, new_ver/workflow/factory/*.js, new_ver/workflow/status/01_StatusGet.js, new_ver/workflow/worker/worker.js, new_ver/test/*.js, new_ver/sql/*.sql, new_ver/schema/testWooTargetSample.xml, docs/log/log.md
 
 48. 2026-08-24 GitHub Develop 리모트 동기화
 Purpose: FIX-15~20 검수 수정( sqlSelect/sqlExec·고아 버킷·BATCH 80k·MIN/MAX 분할)을 origin/main에 올린다.

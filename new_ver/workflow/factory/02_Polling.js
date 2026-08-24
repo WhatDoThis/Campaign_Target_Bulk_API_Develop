@@ -28,6 +28,9 @@ if (String(instance.vars.nextAction) === "finish") {
   var MAX_READY   = NUM(instance.vars.MAX_READY_POLL, 5);
   var MAX_RUN     = NUM(instance.vars.MAX_RUN_POLL, 360);
   var GRAND_TOTAL = NUM(instance.vars.GRAND_TOTAL, 0);
+  // (변경) 하드코딩 → Config. MAX_READY/MAX_RUN 과 동일 선언 위치
+  var MAX_ROUND   = NUM(instance.vars.MAX_ROUND, 200);
+  var MAX_STALL   = NUM(instance.vars.MAX_STALL, 3);
 
   var poll = NUM(instance.vars.pollCount) + 1;
   instance.vars.pollCount = poll;
@@ -101,7 +104,7 @@ if (String(instance.vars.nextAction) === "finish") {
     logInfo("=== Round " + instance.vars.round + " 워커 완료 / sent="
       + sentSum + " / 누적 " + processed + " ===");
 
-    // (변경) 5천만 count 회피. 1건 존재 여부만 확인 (log #31 동일 판단)
+    // 전체 count 회피. pending 1건 존재 여부만 확인
     // countStatus: 1=잔량있음 / 0=없음 / -1=조회실패
     var countStatus = -1;
     try {
@@ -120,9 +123,8 @@ if (String(instance.vars.nextAction) === "finish") {
     instance.vars.pendingExists = countStatus;
     logInfo("[Polling] pending 존재=" + countStatus);
 
-    // (변경) -1(조회실패)을 최우선 처리. dead branch 제거
-    // (변경) count 실패 반복 시 무한 라운드 방지
-    var MAX_ROUND = 200;
+    // countStatus 우선순위: 조회실패(-1) → 잔량없음(0) → GRAND_TOTAL → next
+    // 조회 실패 반복 시 MAX_ROUND 초과하면 finish
     var roundNo = parseInt(instance.vars.round, 10) || 0;
     if (countStatus < 0) {
       if (roundNo >= MAX_ROUND) {
@@ -141,6 +143,23 @@ if (String(instance.vars.nextAction) === "finish") {
     } else {
       instance.vars.nextAction = "next";
       logInfo("[Polling] 미전송 잔존 → next");
+    }
+
+    // (변경) 라운드 무진행 감지. MAX_ROUND 소진 전에 조기 탈출
+    var prevProcessed = NUM(instance.vars.prevProcessed, -1);
+    if (String(instance.vars.nextAction) === "next") {
+      if (processed <= prevProcessed) {
+        var stall = NUM(instance.vars.stallCount) + 1;
+        instance.vars.stallCount = stall;
+        // (변경) stall >= 3 하드코딩 → MAX_STALL
+        if (stall >= MAX_STALL) {
+          instance.vars.nextAction = "finish";
+          logError("[Polling] " + MAX_STALL + "라운드 연속 처리량 0 → 강제 종료 processed=" + processed);
+        }
+      } else {
+        instance.vars.stallCount = 0;
+      }
+      instance.vars.prevProcessed = processed;
     }
   }
 }

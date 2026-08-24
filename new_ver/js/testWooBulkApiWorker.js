@@ -3,9 +3,8 @@
 // ------------------------------------------------------------
 // Adobe Target Bulk Profile Update API v2. 워커 WF N개(최대 15)가 loadLibrary로 공유.
 // 기본 전송은 thirdPartyId + seg_id. CUSTOM_ATTR로 샘플 스키마 속성을 가변 추가.
-// segId는 Sample 컬럼 사전 적재(워커 런타임 생성 없음). 전송 이력은 Sample.master FK.
-// Detail WriteCollection 은 사용하지 않음 — Sample.apiYn + imasterid 가 단일 진실 공급원.
-// 인스턴스 상태는 this. 스로틀은 BulkApiWorker.calcThrottleMs(workerCount) 단일 소스.
+// segId는 Sample 컬럼 사전 적재. 전송 이력은 Sample.apiYn + master FK.
+// 인스턴스 상태는 this. 스로틀은 BulkApiWorker.calcThrottleMs(workerCount).
 //
 // [Main Functions]
 // 1. queryMembers — apiYn='N' + ingestYm/lineNo 커서 + @segId. idx_pending_queue 조건 일치
@@ -24,7 +23,7 @@
 
 
 // ============================================================
-// 환경 설정 — 변경 지점 일원화
+// 환경 설정 — BULK_CFG 에 운영 파라미터 일원화
 //   BULK_ 접두어: loadLibrary는 호출부와 동일 스코프에 로드됨.
 //                 CFG 같은 흔한 이름은 워크플로우 변수와 충돌 위험
 //   xtk:option(getOption/setOption)은 쓰지 않음. 값은 여기 또는 시그널(vars)
@@ -47,8 +46,8 @@ var BULK_CFG = {
 
 
     // ---- 처리 규모 ----
-    // BATCH_SIZE: 50MB/500k 한도 내. 메모리 피크 완화 — target-limits
-    BATCH_SIZE        : 80000,   // (변경) 150000 → 80000
+    // BATCH_SIZE: queryMembers 1회 fetch 상한. 50MB·500k 이내, nlserver 메모리 피크 고려 — target-limits
+    BATCH_SIZE        : 50000,
     MAX_BATCH_ROWS      : 500000,           // profile-bulk-api 공식 행 상한 (하드 가드)
     LINE_NO_MAX         : 2000000000,       // lineNo 가드. ACC long 최대보다 여유. wrap 금지
 
@@ -68,7 +67,7 @@ var BULK_CFG = {
     MEMBER_TABLE        : "WootarTestWooTargetSample",   // sqlExec UPDATE 용 물리 테이블
 
 
-    // ---- 로그 스키마 (배치 1건. 건별 Detail 은 폐기) ----
+    // ---- 전송 이력 Master (배치 1건 = POST 1회) ----
     MASTER_SCHEMA       : "wootar:testWooTargetBulkApiMaster",
     MASTER_ELEMENT      : "testWooTargetBulkApiMaster",
 
@@ -91,9 +90,9 @@ var BULK_CFG = {
     //   STATUS_CPM: testWooBulkApiStatus.js 가 동시 실행 시 쓸 예산. 워커는 나머지 45 분할
     ACCOUNT_CPM         : 50,
     STATUS_CPM          : 5,
-    WORKER_COUNT        : 3,                // Detail 제거 반영. Factory 발사 + 스로틀 기본
+    WORKER_COUNT        : 3,                // Factory 발사 + 스로틀 기본
     WORKER_MAX          : 15,
-    SAFETY_RATIO        : 0.9,              // 예산 분리로 Status 충돌 위험 감소 → 0.7에서 상향
+    SAFETY_RATIO        : 0.9,              // (ACCOUNT_CPM - STATUS_CPM) 예산 중 워커에 할당할 비율
     STAGGER_SLOT_MS     : 1200,             // 워커 첫 POST 분산. TBAW1=0, TBAW2=1.2s ...
 
     // 50MB 초과 시 throw 대신 절반 분할 재귀. BATCH_SIZE 를 크게 쓰기 위한 필수 장치
@@ -159,7 +158,7 @@ function BulkApiWorker(p) {
   }
 
   // 스로틀 = 60초 / ((ACCOUNT_CPM - STATUS_CPM) × SAFETY_RATIO / 워커수)
-  // (변경) 주석 오류 정정. SAFETY_RATIO 0.9 기준 실제값은 약 4,445ms (기존 "약 13.3s" 는 0.7 시절 잔재)
+  // 워커 3·SAFETY_RATIO 0.9 기준 약 4,445ms — target-limits 50 calls/min
   var workerCount = parseInt(p.workerCount, 10) || BULK_CFG.WORKER_COUNT;
   if (workerCount < 1) workerCount = 1;
   var wmax = parseInt(BULK_CFG.WORKER_MAX, 10) || 15;
@@ -173,15 +172,15 @@ function BulkApiWorker(p) {
   var nm = String(this.workerName || "").match(/([0-9]+)$/);
   if (nm) this.workerIndex = parseInt(nm[1], 10) || 0;
 
-  this.MIN_INTERVAL_MS = BulkApiWorker.calcThrottleMs(workerCount);   // (변경) 계산 단일화
+  this.MIN_INTERVAL_MS = BulkApiWorker.calcThrottleMs(workerCount);   // Factory 00_Config 와 동일 공식
 
   this.lastCallMs = 0;    // 직전 API 호출 시각. 0 = 미호출
   this.lastAttempt = 0;   // 직전 배치의 실제 시도 횟수. 실패 Master 기록용
 }
 
 
-// (변경) 스로틀 계산 단일 소스. Config 로그와 워커 실동작 불일치 방지
-// 공식: Target bulk profile update 50 calls/min, 초과 시 503 (target-limits)
+// 워커·Factory Config 공용 스로틀(ms). (ACCOUNT_CPM - STATUS_CPM) × SAFETY_RATIO / workerCount
+// target-limits: bulk profile update 50 calls/min, 초과 시 503
 BulkApiWorker.calcThrottleMs = function(workerCount) {
   var wc = parseInt(workerCount, 10) || 1;
   if (wc < 1) wc = 1;
@@ -348,8 +347,8 @@ BulkApiWorker.prototype.clipSegId = function(seg) {
 //   첫 호출: lineStart 이상 / 이후: 직전 배치 마지막 lineNo 초과
 //   orderBy @lineNo ASC. CSV 행 순서 = 적재 일련
 //
-//   [주의] @apiYn = 'N' 만 — idx_pending_queue(apiYn,ingestYm,lineNo) 과 일치
-//          OR @apiYn IS NULL 은 제거. STEP 2 백필 + notNull+sqlDefault='N' 전제
+//   [주의] @apiYn = 'N' 만 — idx_pending_queue(apiYn,ingestYm,lineNo) 와 조건 순서 일치
+//          apiYn NULL 행은 처리 대상 아님. notNull + sqlDefault='N' 전제
 //   [주의] @segId 는 Sample 사전 적재. 비어 있으면 run()에서 throw
 //   [주의] distinct 미사용 — 같은 UID가 여러 큐 행일 수 있음. 구간은 lineNo
 // ============================================================
@@ -469,8 +468,7 @@ BulkApiWorker.prototype.throttle = function() {
 //   1단계 HTTP: 429/503/5xx = 대기 후 재시도, 4xx = 즉시 실패
 //   2단계 비즈니스: HTTP 200 + <success>false</success> 가능
 //
-//   [유지] MemoryBuffer 루프 밖 1회 생성
-//          body 대입 시 "copied without alteration" → 재시도 재사용 안전
+//   MemoryBuffer 루프 밖 1회 생성 — body 재대입 시 재시도 재사용 안전
 //          https://experienceleague.adobe.com/developer/campaign-api/api/p-HttpClientRequest-body.html
 // ============================================================
 BulkApiWorker.prototype.callBulkApiPayload = function(payload, rowCount) {
@@ -626,7 +624,7 @@ BulkApiWorker.prototype.saveMaster = function(info) {
 
 
 // ============================================================
-// # 5. updateSampleSent — Detail 대체. 성공 배치만 Sample 구간 UPDATE
+// # 5. updateSampleSent — 성공 배치 Sample 구간 UPDATE
 //   apiYn='Y' + imasterid={masterId}. Campaign numeric 은 NULL 불가 → 0=미연결
 //   WHERE sapiyn='N' 멱등성: 이미 Y 인 행은 건드리지 않음
 //   masterId=0 이면 스킵 — Master INSERT 실패 시 유령 성공 방지
@@ -653,29 +651,30 @@ BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLi
     + " SET sapiyn='Y', imasterid=" + mid
     + " WHERE singestym='" + this.sqlLit(ym) + "'"
     + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
+    // (변경) 이 sapiyn='N' 은 pending 정의가 아닌 멱등 가드 — PENDING_COND_SQL 과 무관하게 고정
     + " AND sapiyn='N'";
 
-  // (변경) sqlExec 는 UPDATE 영향 행 수를 반환 — f-sqlExec.html
+  // sqlExec UPDATE 영향 행 수 반환 — f-sqlExec.html
   var affected = sqlExec(usql);
   var n = parseInt(affected, 10);
 
   if (!isNaN(n)) {
-    // (변경) 역조회 COUNT 제거. 반환값으로 즉시 검증
+    // 전송 건수와 UPDATE 영향 행 수 대조
     if (n !== rowCount) {
       logWarning("[" + this.workerName + "] UPDATE 행 수 불일치 기대=" + rowCount
         + " 실제=" + n + " (line " + fromLine + "~" + toLine + ")");
     }
   } else {
-    // (변경) 반환 미지원 빌드 대비 fallback — 이때만 FIX-15-B 역조회 수행
+    // sqlExec 반환 미지원 빌드만 COUNT 역조회 fallback
     var vsql = "SELECT COUNT(*) AS n FROM " + BULK_CFG.MEMBER_TABLE
       + " WHERE singestym='" + this.sqlLit(ym) + "'"
       + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
       + " AND sapiyn='Y' AND imasterid=" + mid;
     try {
-      // (변경) sqlSelect(format, query) 시그니처 준수 — f-sqlSelect.html
+      // sqlSelect(format, query). format 필드명 = SELECT 별칭 — f-sqlSelect.html
       var vrs = sqlSelect("row,@n:long", vsql);
       var vn = 0;
-      // (변경) E4X 빈 XMLList 도 undefined 가 아님 → length() 로 판정
+      // E4X 빈 XMLList 는 undefined 아님. length() 로 존재 판정
       if (vrs && vrs.row.length() > 0) {
         for each (var vr in vrs.row) { vn = parseInt(String(vr.@n), 10) || 0; }
       }
@@ -728,7 +727,7 @@ BulkApiWorker.prototype.sendSlice = function(records) {
     + Math.round(payload.length / records.length) + "B");
 
   this.postNo++;
-  // (변경) DRY_RUN 배치는 batchName 에 표식. 사후 정리 식별용
+  // DRY_RUN Master 는 batchName 접미 -DRY 로 실전송 이력과 구분
   var batchName = this.workerName + "-" + this.runId + "-" + this.postNo
                 + (this.DRY_RUN ? "-DRY" : "");
   var firstLine = records[0].line;
@@ -794,7 +793,7 @@ BulkApiWorker.prototype.sendSlice = function(records) {
 // # 7. run — 메인 루프
 //   순서: 조회 → sendSlice(POST+Master+Sample). batchStatus GET 없음
 //   커서 갱신은 try-catch 밖 — 실패 fetch 구간도 커서 전진(무한 루프 방지)
-//   실패 행은 apiYn='N' 유지 → Factory 다음 라운드에서 NTILE 재분배
+//   실패 행은 apiYn='N' 유지 → Factory 다음 라운드 재분배
 // ============================================================
 BulkApiWorker.prototype.run = function() {
   var totalProcessed = 0;
@@ -802,6 +801,10 @@ BulkApiWorker.prototype.run = function() {
   var batchNo = 0;      // queryMembers fetch 횟수
   var lastLine = 0;
   var errorCount = 0;   // 연속 실패 카운터. 성공 시 리셋
+  // (변경) lastLine 무진행 감지. 동일 lastLine 이 반복되면 즉시 중단
+  var prevLastLine = -1;
+  var noProgress = 0;
+  var NO_PROGRESS_MAX = 3;
   this.postNo = 0;
 
   logInfo("[" + this.workerName + "] 시작: " + this.ingestYm
@@ -818,7 +821,7 @@ BulkApiWorker.prototype.run = function() {
     // 1) 조회
     var result = this.queryMembers(lastLine, this.BATCH_SIZE);
 
-    // 2) 배치 구성 — segId 는 DB 값. 런타임 generateSegId 없음
+    // 2) 배치 구성 — segId 는 DB 사전 적재값. 비어 있으면 throw
     var batchRecords = [];
     for each (var m in result[BULK_CFG.MEMBER_ELEMENT]) {
       var segRaw = String(m.@segId || "").replace(/^\s+|\s+$/g, "");
@@ -833,9 +836,14 @@ BulkApiWorker.prototype.run = function() {
           this.readXmlAttr(m, this.customAttrs[ei])
         );
       }
+      // (변경) lineNo NaN 방어. 무진행 원인 1순위
+      var ln = parseInt(String(m.@lineNo), 10);
+      if (isNaN(ln)) {
+        throw new Error("[" + this.workerName + "] lineNo 파싱 실패 uid=" + m.@membershipUid);
+      }
       batchRecords.push({
         uid:    m.@membershipUid.toString(),
-        line:   parseInt(String(m.@lineNo), 10) || 0,
+        line:   ln,
         segId:  segRaw,
         extras: extras
       });
@@ -870,6 +878,20 @@ BulkApiWorker.prototype.run = function() {
 
     // 커서 전진 (성공/실패 무관)
     lastLine = batchRecords[count - 1].line;
+
+    // (변경) 진행 여부 판정. batchRecords 는 있는데 lastLine 이 안 늘면 무진행
+    if (lastLine <= prevLastLine) {
+      noProgress++;
+      logWarning("[" + this.workerName + "] lastLine 무진행 " + noProgress
+        + "/" + NO_PROGRESS_MAX + " (lastLine=" + lastLine + ")");
+      if (noProgress >= NO_PROGRESS_MAX) {
+        throw new Error("[" + this.workerName + "] lastLine 진행 중단 line=" + lastLine
+          + " — lineNo 파싱 또는 UPDATE 실패 의심");
+      }
+    } else {
+      noProgress = 0;
+    }
+    prevLastLine = lastLine;
   }
 
   logInfo("[" + this.workerName + "] 완료 — 성공 " + totalProcessed

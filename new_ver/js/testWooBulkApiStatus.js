@@ -42,7 +42,7 @@ function BulkStatusChecker() {
   }
   this.authToken = String(BULK_CFG.AUTH_TOKEN || "").replace(/^\s+|\s+$/g, "");
   this.lastCallMs = 0;
-  var cpm = BULK_CFG.STATUS_CPM * BULK_CFG.SAFETY_RATIO;   // (변경) 워커 예산과 분리
+  var cpm = BULK_CFG.STATUS_CPM * BULK_CFG.SAFETY_RATIO;   // Status 전용 CPM 예산
   if (!(cpm > 0)) cpm = 1;
   this.MIN_INTERVAL_MS = Math.ceil(60000 / cpm);
   this.schema  = String(BULK_CFG.MASTER_SCHEMA);

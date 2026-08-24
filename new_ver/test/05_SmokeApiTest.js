@@ -24,8 +24,8 @@ var lineS  = parseInt(instance.vars.smkRealLineS, 10) || 0;
 var lineE  = parseInt(instance.vars.smkRealLineE, 10) || 0;
 var SCHEMA = String(instance.vars.smkSchema);
 var ELEMENT = String(instance.vars.smkElement);
-var MASTER = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
-// (변경) element 명 하드코딩 제거. BULK_CFG 단일 소스
+var MASTER = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA)
+  : "wootar:testWooTargetBulkApiMaster";
 var MASTER_EL = (typeof BULK_CFG !== "undefined" && BULK_CFG.MASTER_ELEMENT)
   ? String(BULK_CFG.MASTER_ELEMENT) : "testWooTargetBulkApiMaster";
 instance.vars.smkStatusUrl = "";
@@ -66,7 +66,7 @@ if (instance.vars.smkTApi !== "1") {
     ).ExecuteQuery();
 
     var batchName = "", statusUrl = "", httpCode = "", recCnt = "";
-    for each (var m in mq[MASTER_EL]) {   // (변경) 하드코딩 → BULK_CFG
+    for each (var m in mq[MASTER_EL]) {
       batchName = String(m.@batchName);
       statusUrl = String(m.@batchStatusUrl);
       httpCode  = String(m.@httpCode);
@@ -94,7 +94,7 @@ if (instance.vars.smkTApi !== "1") {
          "status=" + st + " recordCount=" + recCnt);
     }
 
-    // (변경) 인덱스 (apiYn, ingestYm, lineNo) 선행 조건 추가. 링크 단독 조건은 풀스캔
+    // idx_pending_queue(apiYn, ingestYm, lineNo) 와 조건 순서 일치
     var scond = "@apiYn='Y' AND @ingestYm='" + ym + "'"
       + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE
       + " AND [master/@batchName] LIKE 'SMOKE-" + RUN_ID + "-%'"

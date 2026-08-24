@@ -34,7 +34,7 @@ if ((!ym || lineS < 1) || instance.vars.smkTSignal !== "1") {
   logInfo("  [SKIP] 실전송 구간 없음");
 } else {
   try {
-    // (변경) apiYn 선행 유지. idx_pending_queue 컬럼 순서와 일치
+    // idx_pending_queue 컬럼 순서와 일치 — apiYn 선행
     var cond1 = "@apiYn = 'Y' AND @ingestYm = '" + ym + "'"
               + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE;
     var yq = xtk.queryDef.create(
@@ -50,7 +50,7 @@ if ((!ym || lineS < 1) || instance.vars.smkTSignal !== "1") {
       "Y=" + ycnt + " / 기대>=" + expect + " / " + ym + " line " + lineS + " ~ " + lineE
         + " / uid " + lo + " ~ " + hi);
 
-    // (변경) 인덱스 3컬럼을 먼저 소진한 뒤 FK 필터. imasterid 는 별도 인덱스 없음
+    // 인덱스 3컬럼 선행 후 FK 필터. imasterid 는 별도 인덱스 없음
     var cond2 = "@apiYn = 'Y' AND @ingestYm = '" + ym + "'"
               + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE
               + " AND [@master-id] > 0";
@@ -111,7 +111,7 @@ else {
         <where><condition expr={"@batchName LIKE 'SMOKE-" + RUN_ID
           + "%' OR @batchName LIKE 'SMOKE-LOCAL-" + RUN_ID + "%'"}/></where>, false);
     }
-    // (변경) 전체 SMOKE 삭제 제거. 이번 runId 만 정리
+    // 이번 runId Master 만 삭제. Target 프로필·타 회차 SMOKE 는 유지
     ok("SMOKE Master 삭제", true, "runId=" + RUN_ID + " 한정 / Target 프로필은 유지");
   } catch (e) { ok("롤백·정리", false, e.toString()); }
   try { setOption(String(instance.vars.smkOptKey), "", "smoke worker status"); } catch (e) {}

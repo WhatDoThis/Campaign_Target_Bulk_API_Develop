@@ -53,10 +53,91 @@ WHERE sapiyn='N' AND singestym='YYYYMM' ORDER BY ilineno LIMIT 10;
 ```
 `idx_pending_queue` 사용이 보여야 한다. Seq Scan 이면 구조 업데이트 재실행.
 
-### 5) (선택) 부분 인덱스 — FIX-20-D
+### 5) 부분 인덱스 **필수** — FIX-23
 
-전송 완료(`sapiyn='Y'`) 행이 pending 인덱스에서 자동 제외되어 조회가 빨라질 수 있다.
-`01_migration.sql` 말미 주석의 DDL을 참고. XML `idx_pending_queue` 와 역할 중복 → EXPLAIN 실측 후 하나만 유지.
+> **3단계 필수.** FIX-21 `splitBounds` 가 `MIN/MAX/COUNT(*)` 를 매 라운드 실행한다.
+> 부분 인덱스 없이 5천만 pending 전량 COUNT 는 수십 초 소요.
+
+```sql
+-- psql 단독 실행 (ACC SQL 활동 금지 — CONCURRENTLY 는 트랜잭션 블록 불가)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sample_pending_partial
+  ON wootartestwootargetsample (singestym, ilineno)
+  WHERE sapiyn = 'N';
+
+ANALYZE wootartestwootargetsample;
+```
+
+- 5천만 행 기준 생성: 수 분~수십 분 (부하·디스크에 따라 상이)
+- 생성 직후 `ANALYZE` 필수 — planner 가 partial index 를 선택하도록
+- XML `idx_pending_queue` 와 공존 가능 (ACC 마법사는 미인지 인덱스 삭제 안 함)
+- 확인:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT MIN(ilineno), MAX(ilineno), COUNT(*)
+FROM wootartestwootargetsample
+WHERE sapiyn='N' AND singestym='YYYYMM';
+-- → Index Only Scan (idx_sample_pending_partial) 권장. 실행 시간 기록
+```
+
+---
+
+## pending 조건 이중 정의 (FIX-24)
+
+> **경고:** pending 판정은 **반드시 쌍으로** 수정할 것.
+
+| 변수 | 용도 | 설정 위치 |
+|---|---|---|
+| `PENDING_COND` | XPath — queryDef (`head` 조회, 폴링) | `00_Config.js` |
+| `PENDING_COND_SQL` | SQL — `splitBounds` sqlSelect | `00_Config.js` |
+
+`PENDING_COND_SQL` 은 Config 상수에서만 설정. **외부 입력·vars 조작 금지** — SQL 직접 삽입.
+둘 중 하나만 바꾸면 분배(`splitBounds`)와 폴링이 어긋난다.
+
+`updateSampleSent()` 의 `WHERE sapiyn='N'` 은 pending 정의가 아니라 **멱등 UPDATE 가드**이므로 별도.
+
+---
+
+## 무진행 가드 (FIX-25)
+
+| 계층 | 조건 | 동작 |
+|---|---|---|
+| 워커 `run()` | `lastLine` 3회 연속 무진행 (`NO_PROGRESS_MAX`) | 예외 종료 |
+| Factory `02_Polling` | `stallCount >= MAX_STALL`(기본 3) 라운드, `globalProcessed` 증가 없음 | `finish` 강제 |
+
+로그에 `lastLine 무진행` 또는 `연속 처리량 0 → 강제 종료` 가 보이면:
+
+1. `apiYn` 갱신 실패 (`masterId=0`, sqlExec 오류) 의심
+2. `lineNo` NULL / 파싱 실패 의심
+3. 배포 후 확인 SQL(§배포 후)로 정합성 점검
+
+---
+
+## 산술 분할 전환 (FIX-20-B / 21 / 22)
+
+| 항목 | NTILE (구) | MIN/MAX 산술 분할 (현) |
+|---|---|---|
+| 분할 방식 | 윈도우 정렬 + NTILE | `MIN/MAX/COUNT` + span 등분 |
+| 제거 사유 | 5천만 행 전체 정렬 버퍼 | — |
+| `remaining` 상한 | 라인 폭 기준 (부정확) | **밀집도(`density`)** 보정 (FIX-21) |
+| 버킷 검증 | 겹침 검사 (항상 통과, 죽은 코드) | **연속성** (`s === prev.e + 1`) (FIX-22) |
+| uid 로그 | 등치 `@lineNo=` (경계 미적중) | 범위 조회, **병합 후** 재조회 (FIX-26/28) |
+
+---
+
+## 튜닝 파라미터
+
+| 파라미터 | 기본값 | 소속 | 설명 |
+|---|---|---|---|
+| `BATCH_SIZE` | `BULK_CFG` | 라이브러리 | queryMembers 1회 fetch 상한 |
+| `WORKER_COUNT` | `BULK_CFG` | 라이브러리/Factory | 동시 워커 수·스로틀 분모 |
+| `GRAND_TOTAL` | 50,000,000 | `FACTORY_CFG` | 누적 전송 상한 |
+| `ROUND_LIMIT` | 0 (= GRAND_TOTAL) | `FACTORY_CFG` | 라운드당 상한 |
+| `POLL_WAIT_SEC` | 15 | `FACTORY_CFG` | Factory Wait(초) |
+| `MAX_READY` | 5 | `FACTORY_CFG` | ready 상태 재시도 |
+| `MAX_RUN` | 360 | `FACTORY_CFG` | 라운드 내 폴링 상한 |
+| `MAX_ROUND` | 200 | `FACTORY_CFG` | pending 조회 실패 무한 라운드 방지 |
+| `MAX_STALL` | 3 | `FACTORY_CFG` | 연속 무진행 라운드 허용 |
 
 ---
 
@@ -135,15 +216,34 @@ WHERE sapiyn='N' AND singestym='YYYYMM' ORDER BY ilineno LIMIT 10;
 ## 3. 배포 순서 (역순 롤백 가능)
 
 ```
+0. psql 단독: idx_sample_pending_partial CREATE INDEX CONCURRENTLY + ANALYZE (FIX-23)
+   EXPLAIN (ANALYZE, BUFFERS) MIN/MAX/COUNT — Index Only Scan 확인
 1. Sample + Master 스키마 구조 업데이트
-2. sql/01_migration.sql 실행
-3. sql/02_seed_segid.sql — SELECT(0)에서 need_seg=0·need_backfill=0 확인 후 tmp_seg_combo 생성+UPDATE를 **같은 세션**에서 한 문장씩 실행. 완료 후 VACUUM ANALYZE
+2. sql/01_migration.sql 실행 (apiYn 백필. 인덱스는 0단계에서 이미 생성)
+3. sql/02_seed_segid.sql — need_seg=0·need_backfill=0 확인 후 같은 세션에서 UPDATE
 4. B1 → B2 라이브러리 재게시
-5. C1~C3 Factory JS 붙여넣기
+5. C1~C3 Factory JS 붙여넣기 (00_Config + 01_Distributor 동시 배포 — FIX-24)
 6. D1 Factory Wait 15초 변경
-7. 스모크 (아래 §5)
-8. GRAND_TOTAL 소량 → 행당 바이트 로그 확인 → BATCH_SIZE 조정
+7. 스모크 (아래 §5) — bucket line 범위·발사 uid 로그 확인 (FIX-26/28)
+8. GRAND_TOTAL 소량 → 행당 바이트 로그 → BATCH_SIZE 조정
 9. GRAND_TOTAL=50,000,000 전량
+```
+
+### 배포 후 확인 SQL
+
+```sql
+-- 전송 완료 정합성. apiYn='Y' 인데 FK 미연결이면 0
+SELECT COUNT(*) FROM wootartestwootargetsample
+WHERE sapiyn = 'Y' AND imasterid = 0;
+
+-- 잔여 pending 분포. ingestYm 편중 확인
+SELECT singestym, COUNT(*) FROM wootartestwootargetsample
+WHERE sapiyn = 'N' GROUP BY singestym ORDER BY singestym;
+
+-- Master 실패 배치. errorMessage 로 503/payload 원인 분류
+SELECT httpcode, COUNT(*), MIN(serrormessage)
+FROM wootartestwootargetbulkapimaster
+WHERE isuccess = 0 GROUP BY httpcode;
 ```
 
 ---
@@ -282,6 +382,6 @@ DRY_RUN=false, GRAND_TOTAL=150000                                  → 소량 �
 | `js/testWooBulkApiWorker.js` | 개편 |
 | `js/testWooBulkApiStatus.js` | STATUS_CPM |
 | `workflow/factory/00_Config.js` | 개편 |
-| `workflow/factory/01_WorkerDistributor.js` | NTILE |
+| `workflow/factory/01_WorkerDistributor.js` | MIN/MAX/COUNT 산술 분할 |
 | `workflow/factory/02_Polling.js` | pendingRows |
 | `workflow/worker/worker.js` | 변경 없음 |

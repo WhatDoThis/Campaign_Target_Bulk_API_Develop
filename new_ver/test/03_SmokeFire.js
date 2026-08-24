@@ -47,9 +47,7 @@ if (instance.vars.smkTSignal !== "1") {
     var wfState = parseInt(wf.@state, 10);
     if (isNaN(wfState)) wfState = -1;
 
-    // (변경) state 의미 통일
-    // 11 = 시작됨(started). 시그널 수신은 11 에서만 가능
-    // 13 = 일시중지(paused) / 20 = 중지(stopped)
+    // WF state: 11=시작됨(시그널 수신 가능) / 13=일시중지 / 20=중지
     // PostEvent complete 인자는 반드시 false. true 면 대상이 완료되어 재수신 불가
     var started = (wfState === 11);
     ok("시그널 WF 존재", wfId > 0, SIG_WF + " (id=" + wfId + ", label=" + wf.@label + ")");

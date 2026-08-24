@@ -245,7 +245,7 @@ else {
     instance.vars.smkMinUid  = head.uid;
 
     if (head.line < 1) {
-      ok("큐 키 백필", false, "lineNo<1 — newLogic 12.2 백필 후 재실행");
+      ok("큐 키 백필", false, "lineNo<1 — backfillSampleQueue.sql 실행 후 재시도");
     } else {
       var wCnt = (typeof BULK_CFG !== "undefined")
         ? (parseInt(BULK_CFG.WORKER_COUNT, 10) || 5) : 5;

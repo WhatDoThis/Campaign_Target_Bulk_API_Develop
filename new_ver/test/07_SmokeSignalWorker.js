@@ -1,7 +1,7 @@
 /* ============================================================================
- * TBAWSmokeSignal / jsWorker (워커 진입 기준)
- * 03_Fire PostEvent 를 받아 라이브러리를 실행한다.
- * Phase A 워커 진입 기준. Factory worker.js 는 Phase B 에서 이 시그널 필드를 따른다.
+ * TBAWSmokeSignal / jsWorker (워커 진입점)
+ * 03_Fire PostEvent 를 받아 BulkApiWorker.run() 을 실행한다.
+ * Factory worker.js 와 동일 vars 계약(workerName, ingestYm, lineStart, lineEnd, runId, optKey).
  *
  * [주의] 이 WF는 항상 '시작됨'. 뒤에 End만 두고 완료로 끄지 말 것.
  *

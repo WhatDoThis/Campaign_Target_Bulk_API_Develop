@@ -8,9 +8,12 @@ SELECT COUNT(*) AS invalid_apiyn
   FROM WootarTestWooTargetSample
  WHERE sapiyn IS NULL OR sapiyn NOT IN ('Y', 'N');
 
--- (변경) 선택 적용. 전송 완료분이 인덱스에서 자동 제외되어 pending 조회가 갈수록 빨라짐
--- ACC 구조 업데이트 마법사는 미인지 인덱스를 삭제하지 않으므로 공존 가능
--- 단 XML dbindex 와 역할 중복 → 실측 후 하나만 유지 권장
--- CREATE INDEX CONCURRENTLY idx_sample_pending_partial
---   ON wootartestwootargetsample (singestym, ilineno)
---   WHERE sapiyn = 'N';
+-- (변경) 선택 → 필수. FIX-21 COUNT(*) 및 MIN/MAX 조회 성능 보장
+-- 전송 완료분이 인덱스에서 자동 제외 → 라운드가 진행될수록 조회가 빨라짐
+-- ACC 구조 업데이트 마법사는 미인지 인덱스를 삭제하지 않으므로 XML dbindex 와 공존
+-- CONCURRENTLY 는 트랜잭션 블록 내 실행 불가 → psql 단독 실행 (ACC SQL 활동 금지)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sample_pending_partial
+  ON wootartestwootargetsample (singestym, ilineno)
+  WHERE sapiyn = 'N';
+
+ANALYZE wootartestwootargetsample;

@@ -10,13 +10,12 @@ SELECT
   COUNT(*) FILTER (
     WHERE ssegid IS NULL OR btrim(ssegid) = ''
   ) AS need_seg,
-  -- (변경) ilineno IS NULL 은 (NULL % 100) 때문에 시딩에서 조용히 누락됨.
-  --        backfillSampleQueue.sql 선행 여부 확인용
+  -- ilineno IS NULL 이면 (NULL % 100) 으로 시딩 누락. backfill 선행 여부 확인용
   COUNT(*) FILTER (WHERE ilineno IS NULL) AS need_backfill
 FROM wootartestwootargetsample;
 
--- (변경) 상관 서브쿼리 → CROSS JOIN + row_number. LATERAL 없이 외부 컬럼 참조 불가
--- 100 × 50 = 5,000행 카테시안. 즉시 완료. 결정론 유지(같은 lineNo → 같은 조합)
+-- lineNo % 100 조합 매핑. CROSS JOIN + row_number (ACC SQL 은 LATERAL 미지원)
+-- 100 × 50 카테시안에서 idx당 20개 태그 선택. 같은 lineNo → 같은 조합(결정론)
 DROP TABLE IF EXISTS tmp_seg_combo;
 CREATE TEMP TABLE tmp_seg_combo AS
 SELECT idx, string_agg(tag, '|') AS segs

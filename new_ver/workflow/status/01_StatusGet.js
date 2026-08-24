@@ -2,7 +2,7 @@
  * TBAWStatus / 01_StatusGet (청크 GET + Master 갱신)
  * ============================================================================
  * pending Master 를 oldest 부터 CHUNK_SIZE 건 GET 한다.
- * 제출 success / apiYn / Detail 은 변경하지 않음.
+ * 제출 success / apiYn / Sample 은 변경하지 않음.
  *
  * [Main Functions]
  * 1. BulkStatusChecker.runChunk
