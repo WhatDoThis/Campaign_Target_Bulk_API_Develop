@@ -74,10 +74,11 @@
              revIntegrity="neutral" revLabel="전송큐행" revLink="targetSample"
              target="wootar:testWooTargetBulkApiMaster" type="link"/>
 
-    <dbindex name="idx_queue_pending">
+    <!-- (변경) apiYn 선행. 3개 쿼리 모두 apiYn 등치 조건 → 인덱스 활용 -->
+    <dbindex name="idx_pending_queue">
+      <keyfield xpath="@apiYn"/>
       <keyfield xpath="@ingestYm"/>
       <keyfield xpath="@lineNo"/>
-      <keyfield xpath="@apiYn"/>
     </dbindex>
 
     <dbindex name="idx_membershipUid">

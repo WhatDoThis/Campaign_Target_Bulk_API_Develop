@@ -22,6 +22,9 @@ var RUN_ID = String(instance.vars.smkRunId || "");
 var SCHEMA = String(instance.vars.smkSchema);
 var ELEMENT = String(instance.vars.smkElement);
 var MASTER = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
+// (변경) element 명 하드코딩 제거. BULK_CFG 단일 소스
+var MASTER_EL = (typeof BULK_CFG !== "undefined" && BULK_CFG.MASTER_ELEMENT)
+  ? String(BULK_CFG.MASTER_ELEMENT) : "testWooTargetBulkApiMaster";
 instance.vars.smkStatusUrl = "";
 instance.vars.smkFetchUid  = "";
 instance.vars.smkFetchUrl  = "";
@@ -60,7 +63,7 @@ if (instance.vars.smkTApi !== "1") {
     ).ExecuteQuery();
 
     var batchName = "", statusUrl = "", httpCode = "", recCnt = "";
-    for each (var m in mq.testWooTargetBulkApiMaster) {
+    for each (var m in mq[MASTER_EL]) {   // (변경) 하드코딩 → BULK_CFG
       batchName = String(m.@batchName);
       statusUrl = String(m.@batchStatusUrl);
       httpCode  = String(m.@httpCode);

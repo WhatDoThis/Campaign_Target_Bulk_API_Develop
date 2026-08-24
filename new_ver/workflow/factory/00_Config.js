@@ -67,9 +67,7 @@ if (batch > parseInt(BULK_CFG.MAX_BATCH_ROWS, 10)) {
   throw new Error("[Config] BATCH_SIZE " + batch + " > Target 상한");
 }
 
-var budgetCpm = parseInt(BULK_CFG.ACCOUNT_CPM, 10) - parseInt(BULK_CFG.STATUS_CPM, 10);
-if (!(budgetCpm > 0)) budgetCpm = 1;
-var throttleMs = Math.ceil(60000 / ((budgetCpm * BULK_CFG.SAFETY_RATIO) / wCount));
+var throttleMs = BulkApiWorker.calcThrottleMs(wCount);   // (변경) 라이브러리 함수 재사용
 
 var grandTotal = parseInt(FACTORY_CFG.GRAND_TOTAL, 10) || 0;
 var roundLimit = parseInt(FACTORY_CFG.ROUND_LIMIT, 10);

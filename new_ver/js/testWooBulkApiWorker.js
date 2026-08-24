@@ -5,10 +5,10 @@
 // 기본 전송은 thirdPartyId + seg_id. CUSTOM_ATTR로 샘플 스키마 속성을 가변 추가.
 // segId는 Sample 컬럼 사전 적재(워커 런타임 생성 없음). 전송 이력은 Sample.master FK.
 // Detail WriteCollection 은 사용하지 않음 — Sample.apiYn + imasterid 가 단일 진실 공급원.
-// 인스턴스 상태는 this. 스로틀은 (ACCOUNT_CPM - STATUS_CPM) × SAFETY_RATIO / workerCount.
+// 인스턴스 상태는 this. 스로틀은 BulkApiWorker.calcThrottleMs(workerCount) 단일 소스.
 //
 // [Main Functions]
-// 1. queryMembers — apiYn='N' + ingestYm/lineNo 커서 + @segId. idx_queue_pending 조건 일치
+// 1. queryMembers — apiYn='N' + ingestYm/lineNo 커서 + @segId. idx_pending_queue 조건 일치
 // 2. buildPayload — batch=thirdPartyId,seg_id[,attr...]. 값은 URL-encode
 // 3. sendSlice — 50MB 초과 분할 + POST + Master + Sample UPDATE
 // 4. callBulkApiPayload — POST v2 + 스로틀 + 429/503 재시도
@@ -16,7 +16,7 @@
 // 6. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
 //
 // [Dependencies]
-// xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer, sqlExec
+// xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer, sqlExec, sqlSelect
 // [참조] https://experienceleague.adobe.com/en/docs/target-dev/developer/api/profile-apis/profile-bulk-api
 //        https://experienceleague.adobe.com/en/docs/target-dev/developer/implementation/methods/profile-api-settings
 //        https://experienceleague.adobe.com/en/docs/target/using/troubleshoot/target-limits
@@ -173,16 +173,25 @@ function BulkApiWorker(p) {
   var nm = String(this.workerName || "").match(/([0-9]+)$/);
   if (nm) this.workerIndex = parseInt(nm[1], 10) || 0;
 
-  var budgetCpm = parseInt(BULK_CFG.ACCOUNT_CPM, 10) - parseInt(BULK_CFG.STATUS_CPM, 10);
-  if (!(budgetCpm > 0)) budgetCpm = 1;
-  var perWorkerCpm = (budgetCpm * BULK_CFG.SAFETY_RATIO) / workerCount;
-  // 설정 오타로 0이 되면 60000/0 → Infinity → sleep 무한 대기
-  if (!(perWorkerCpm > 0)) perWorkerCpm = 1;
-  this.MIN_INTERVAL_MS = Math.ceil(60000 / perWorkerCpm);
+  this.MIN_INTERVAL_MS = BulkApiWorker.calcThrottleMs(workerCount);   // (변경) 계산 단일화
 
   this.lastCallMs = 0;    // 직전 API 호출 시각. 0 = 미호출
   this.lastAttempt = 0;   // 직전 배치의 실제 시도 횟수. 실패 Master 기록용
 }
+
+
+// (변경) 스로틀 계산 단일 소스. Config 로그와 워커 실동작 불일치 방지
+// 공식: Target bulk profile update 50 calls/min, 초과 시 503 (target-limits)
+BulkApiWorker.calcThrottleMs = function(workerCount) {
+  var wc = parseInt(workerCount, 10) || 1;
+  if (wc < 1) wc = 1;
+  var budget = parseInt(BULK_CFG.ACCOUNT_CPM, 10) - parseInt(BULK_CFG.STATUS_CPM, 10);
+  if (!(budget > 0)) budget = 1;
+  var cpm = (budget * BULK_CFG.SAFETY_RATIO) / wc;
+  // 설정 오타로 0 이 되면 60000/0 → Infinity → sleep 무한 대기
+  if (!(cpm > 0)) cpm = 1;
+  return Math.ceil(60000 / cpm);
+};
 
 
 // --- 인증 토큰 해석. 값은 로그에 남기지 않음 ---
@@ -339,7 +348,7 @@ BulkApiWorker.prototype.clipSegId = function(seg) {
 //   첫 호출: lineStart 이상 / 이후: 직전 배치 마지막 lineNo 초과
 //   orderBy @lineNo ASC. CSV 행 순서 = 적재 일련
 //
-//   [주의] @apiYn = 'N' 만 — idx_queue_pending(ingestYm,lineNo,apiYn) 과 일치
+//   [주의] @apiYn = 'N' 만 — idx_pending_queue(apiYn,ingestYm,lineNo) 과 일치
 //          OR @apiYn IS NULL 은 제거. STEP 2 백필 + notNull+sqlDefault='N' 전제
 //   [주의] @segId 는 Sample 사전 적재. 비어 있으면 run()에서 throw
 //   [주의] distinct 미사용 — 같은 UID가 여러 큐 행일 수 있음. 구간은 lineNo
@@ -627,7 +636,7 @@ BulkApiWorker.prototype.saveMaster = function(info) {
 //     apiYn='Y' + master-id>0  → 전송 완료
 //     apiYn='N' + master-id>0  → 실패 후 재시도(직전 배치 참조 유지)
 // ============================================================
-BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLine) {
+BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLine, rowCount) {
   var mid = parseInt(masterId, 10) || 0;
   if (mid === 0) {
     logWarning("[" + this.workerName + "] masterId=0 → Sample 갱신 스킵 (line "
@@ -647,6 +656,28 @@ BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLi
     + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
     + " AND sapiyn='N'"
   );
+
+  // (변경) sqlExec는 영향 행 수 미반환. 역조회로 rowCount와 대조
+  var vsql = "SELECT COUNT(*) AS n FROM " + BULK_CFG.MEMBER_TABLE
+    + " WHERE singestym='" + this.sqlLit(ym) + "'"
+    + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
+    + " AND sapiyn='Y' AND imasterid=" + mid;
+  try {
+    var vrs = sqlSelect(vsql, false);
+    var vn = 0;
+    if (vrs && vrs.row !== undefined) {
+      for each (var vr in vrs.row) { vn = parseInt(String(vr.@n), 10) || 0; }
+    } else if (vrs && vrs.@n !== undefined) {
+      vn = parseInt(String(vrs.@n), 10) || 0;
+    }
+    if (vn !== rowCount) {
+      logWarning("[" + this.workerName + "] Sample 갱신 불일치 기대=" + rowCount
+        + " 실제=" + vn + " (" + ym + " line " + fromLine + "~" + toLine + ")");
+    }
+  } catch (eV) {
+    logWarning("[" + this.workerName + "] 갱신 검증 조회 실패: " + (eV.message || eV));
+  }
+
   return 1;
 };
 
@@ -687,7 +718,9 @@ BulkApiWorker.prototype.sendSlice = function(records) {
     + Math.round(payload.length / records.length) + "B");
 
   this.postNo++;
-  var batchName = this.workerName + "-" + this.runId + "-" + this.postNo;
+  // (변경) DRY_RUN 배치는 batchName 에 표식. 사후 정리 식별용
+  var batchName = this.workerName + "-" + this.runId + "-" + this.postNo
+                + (this.DRY_RUN ? "-DRY" : "");
   var firstLine = records[0].line;
   var endLine   = records[records.length - 1].line;
   var rowCount  = records.length;
@@ -710,7 +743,7 @@ BulkApiWorker.prototype.sendSlice = function(records) {
       errorMessage:   ""
     });
 
-    this.updateSampleSent(masterId, this.ingestYm, firstLine, endLine);
+    this.updateSampleSent(masterId, this.ingestYm, firstLine, endLine, rowCount);
 
     logInfo("[" + this.workerName + "] POST #" + this.postNo + " 저장 완료 "
       + "(master " + masterId + " / line " + firstLine + "~" + endLine + ")");

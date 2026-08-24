@@ -34,11 +34,13 @@ if ((!ym || lineS < 1) || instance.vars.smkTSignal !== "1") {
   logInfo("  [SKIP] 실전송 구간 없음");
 } else {
   try {
+    // (변경) apiYn 선행 유지. idx_pending_queue 컬럼 순서와 일치
+    var cond1 = "@apiYn = 'Y' AND @ingestYm = '" + ym + "'"
+              + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE;
     var yq = xtk.queryDef.create(
       <queryDef schema={SCHEMA} operation="count">
         <where>
-          <condition expr={"@apiYn = 'Y' AND @ingestYm = '" + ym
-            + "' AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE}/>
+          <condition expr={cond1}/>
         </where>
       </queryDef>
     ).ExecuteQuery();
@@ -48,11 +50,14 @@ if ((!ym || lineS < 1) || instance.vars.smkTSignal !== "1") {
       "Y=" + ycnt + " / 기대>=" + expect + " / " + ym + " line " + lineS + " ~ " + lineE
         + " / uid " + lo + " ~ " + hi);
 
+    // (변경) 인덱스 3컬럼을 먼저 소진한 뒤 FK 필터. imasterid 는 별도 인덱스 없음
+    var cond2 = "@apiYn = 'Y' AND @ingestYm = '" + ym + "'"
+              + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE
+              + " AND [@master-id] > 0";
     var mq = xtk.queryDef.create(
       <queryDef schema={SCHEMA} operation="count">
         <where>
-          <condition expr={"@apiYn = 'Y' AND [@master-id] > 0 AND @ingestYm = '" + ym
-            + "' AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE}/>
+          <condition expr={cond2}/>
         </where>
       </queryDef>
     ).ExecuteQuery();
@@ -106,9 +111,8 @@ else {
         <where><condition expr={"@batchName LIKE 'SMOKE-" + RUN_ID
           + "%' OR @batchName LIKE 'SMOKE-LOCAL-" + RUN_ID + "%'"}/></where>, false);
     }
-    xtk.session.DeleteCollection(MASTER,
-      <where><condition expr="@batchName LIKE 'SMOKE%'"/></where>, false);
-    ok("SMOKE Master 삭제", true, "Target 프로필은 유지");
+    // (변경) 전체 SMOKE 삭제 제거. 이번 runId 만 정리
+    ok("SMOKE Master 삭제", true, "runId=" + RUN_ID + " 한정 / Target 프로필은 유지");
   } catch (e) { ok("롤백·정리", false, e.toString()); }
   try { setOption(String(instance.vars.smkOptKey), "", "smoke worker status"); } catch (e) {}
 }

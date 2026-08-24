@@ -2,7 +2,7 @@
  * TBAWSmoke / 03_Fire (시그널 발사)
  * TBAWSmokeSignal 의 sigWorker 로 PostEvent. dryRun=false, pending 큐 키 소수 실전송.
  *
- * [주의] 대상 WF가 '시작됨'(state=20)이 아니면 예외 없이 로그만 남는다.
+ * [주의] 대상 WF가 '시작됨'(state=11)이 아니면 예외 없이 로그만 남는다.
  *        complete 인자는 false. true면 대상이 완료되어 다음 시그널을 못 받는다.
  *
  * [Dependencies]
@@ -47,8 +47,10 @@ if (instance.vars.smkTSignal !== "1") {
     var wfState = parseInt(wf.@state, 10);
     if (isNaN(wfState)) wfState = -1;
 
-    // 공식 감독 예: state 13=pause, 20=stop. 시작됨은 11
-    // https://experienceleague.adobe.com/en/docs/campaign/automation/workflows/use-cases/monitoring/workflow-supervision
+    // (변경) state 의미 통일
+    // 11 = 시작됨(started). 시그널 수신은 11 에서만 가능
+    // 13 = 일시중지(paused) / 20 = 중지(stopped)
+    // PostEvent complete 인자는 반드시 false. true 면 대상이 완료되어 재수신 불가
     var started = (wfState === 11);
     ok("시그널 WF 존재", wfId > 0, SIG_WF + " (id=" + wfId + ", label=" + wf.@label + ")");
     ok("시그널 WF 시작됨", started,

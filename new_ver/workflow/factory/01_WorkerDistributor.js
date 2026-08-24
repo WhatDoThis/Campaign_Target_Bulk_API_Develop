@@ -81,13 +81,17 @@ function fetchUidAtLine(ym, lineNo) {
 // (변경) NTILE 단일 스캔. OFFSET 5천만 회피
 function ntileBounds(ym, wCount, remaining) {
   if (!TABLE) throw new Error("[Distributor] MEMBER_TABLE 미설정");
+  // (변경) LIMIT을 NTILE 안쪽으로. PG는 NTILE이 LIMIT보다 먼저 평가됨
   var sql = "SELECT MIN(t.ilineno) AS ls, MAX(t.ilineno) AS le, COUNT(*) AS cnt "
     + "FROM ("
-    + "  SELECT s.ilineno, NTILE(" + wCount + ") OVER (ORDER BY s.ilineno) AS b"
-    + "  FROM " + TABLE + " s"
-    + "  WHERE s.sapiyn='N' AND s.singestym='" + sqlLit(ym) + "'"
-    + "  ORDER BY s.ilineno"
-    + "  LIMIT " + remaining
+    + "  SELECT q.ilineno, NTILE(" + wCount + ") OVER (ORDER BY q.ilineno) AS b"
+    + "  FROM ("
+    + "    SELECT s.ilineno"
+    + "    FROM " + TABLE + " s"
+    + "    WHERE s.sapiyn='N' AND s.singestym='" + sqlLit(ym) + "'"
+    + "    ORDER BY s.ilineno"
+    + "    LIMIT " + remaining
+    + "  ) q"
     + ") t GROUP BY t.b ORDER BY t.b";
 
   var bounds = [];
@@ -112,6 +116,21 @@ function ntileBounds(ym, wCount, remaining) {
     var le2 = parseInt(String(rs.@le), 10) || 0;
     if (ls2 >= 1 && le2 >= ls2) {
       bounds.push({ ym: ym, s: ls2, e: le2, cnt: NUM(rs.@cnt, 0) });
+    }
+  }
+
+  // (변경) 버킷 수 부족 = 구간 소실 신호
+  if (bounds.length < wCount) {
+    logWarning("[Distributor] NTILE 버킷 " + bounds.length + "/" + wCount
+      + " — remaining=" + remaining);
+  }
+
+  // (변경) 인접 버킷 경계 겹침 검증. NTILE은 연속 분할이므로 겹치면 SQL 이상
+  var vi;
+  for (vi = 1; vi < bounds.length; vi++) {
+    if (bounds[vi].s <= bounds[vi - 1].e) {
+      throw new Error("[Distributor] 버킷 경계 겹침 b" + vi + " s=" + bounds[vi].s
+        + " <= b" + (vi - 1) + " e=" + bounds[vi - 1].e);
     }
   }
 
@@ -149,6 +168,7 @@ logInfo("[Distributor] ym=" + head.ym + " head line=" + head.line
 var bounds = ntileBounds(head.ym, W_COUNT, remaining);
 var runId  = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S") + "R" + round;
 
+// (변경) state 의미 통일. 11 = 시작됨. 13 = 일시중지 / 20 = 중지
 function wfStarted(internalName) {
   try {
     var wf = xtk.queryDef.create(
@@ -163,35 +183,45 @@ function wfStarted(internalName) {
   }
 }
 
-var jobs = [];
+// (변경) 미시작 워커 버킷을 버리지 않고 이월 대상으로 수집
+var liveJobs = [];
+var orphan   = [];
 var w;
 for (w = 0; w < W_COUNT; w++) {
-  var wName = String(instance.vars.WORKER_NAME_TPL).replace("{n}", String(w + 1));
-  var wWf   = String(instance.vars.WORKER_WF_TPL).replace("{n}", String(w + 1));
-  var optKey= OPT_PREFIX + wName;
+  var wName  = String(instance.vars.WORKER_NAME_TPL).replace("{n}", String(w + 1));
+  var wWf    = String(instance.vars.WORKER_WF_TPL).replace("{n}", String(w + 1));
+  var optKey = OPT_PREFIX + wName;
+
   if (w >= bounds.length) {
     setOption(optKey, runId + "|skip", "bulk worker status");
-    logInfo("  " + wName + " : 할당 없음 (skip)");
     continue;
   }
   if (!wfStarted(wWf)) {
     setOption(optKey, runId + "|skip", "bulk worker status");
-    logWarning("  " + wName + " : " + wWf + " 미시작 → skip");
+    logWarning("  " + wName + " : " + wWf + " 미시작 → 버킷 이월");
+    orphan.push(bounds[w]);
     continue;
   }
-  jobs.push({
-    name: wName, wf: wWf, key: optKey,
-    ym: bounds[w].ym, s: bounds[w].s, e: bounds[w].e,
-    su: bounds[w].su, eu: bounds[w].eu
-  });
+  liveJobs.push({ name: wName, wf: wWf, key: optKey, b: bounds[w] });
 }
 
-var fireN  = jobs.length;
+// (변경) 고아 버킷을 라운드로빈 병합. 구간을 min~max로 확장
+var oi;
+for (oi = 0; oi < orphan.length; oi++) {
+  if (liveJobs.length === 0) break;
+  var tgt = liveJobs[oi % liveJobs.length];
+  if (orphan[oi].s < tgt.b.s) tgt.b.s = orphan[oi].s;
+  if (orphan[oi].e > tgt.b.e) tgt.b.e = orphan[oi].e;
+  logInfo("  고아 버킷 " + orphan[oi].s + "~" + orphan[oi].e + " → " + tgt.name);
+}
+
+var fireN  = liveJobs.length;
 var active = 0;
 var names  = [];
 var j;
+// (변경) jobs → liveJobs. 이월 반영된 구간으로 발사
 for (j = 0; j < fireN; j++) {
-  var job = jobs[j];
+  var job = liveJobs[j];
   setOption(job.key, runId + "|ready", "bulk worker status");
   try {
     if (STAGGER > 0 && j > 0) sleep(STAGGER);
@@ -199,9 +229,9 @@ for (j = 0; j < fireN; j++) {
       job.wf, SIG, "",
       <variables
         workerName={job.name}
-        ingestYm={job.ym}
-        lineStart={String(job.s)}
-        lineEnd={String(job.e)}
+        ingestYm={job.b.ym}
+        lineStart={String(job.b.s)}
+        lineEnd={String(job.b.e)}
         runId={runId}
         optKey={job.key}
         workerCount={String(fireN)}/>,
@@ -209,8 +239,8 @@ for (j = 0; j < fireN; j++) {
     );
     active++;
     names.push(job.name);
-    logInfo("  " + job.name + " → " + job.ym + " line " + job.s + "~" + job.e
-      + " (" + job.su + "~" + job.eu + ")");
+    logInfo("  " + job.name + " → " + job.b.ym + " line " + job.b.s + "~" + job.b.e
+      + " (" + job.b.su + "~" + job.b.eu + ")");
   } catch (ePe) {
     setOption(job.key, runId + "|error", "bulk worker status");
     logError("  " + job.name + " PostEvent 실패: " + (ePe.message || ePe));

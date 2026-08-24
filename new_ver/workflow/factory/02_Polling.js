@@ -5,7 +5,7 @@
  *
  * [Main Functions]
  * 1. Option 파싱 (STRICT runId)
- * 2. countPending — @apiYn='N' 잔량
+ * 2. countPending — @apiYn='N' 존재 여부 (count 회피)
  * 3. nextAction: working | next | finish
  *
  * [Dependencies]
@@ -20,6 +20,7 @@ if (String(instance.vars.nextAction) === "finish") {
 
   var W_COUNT     = NUM(instance.vars.WORKER_COUNT, 3);
   var SCHEMA      = String(instance.vars.MEMBER_SCHEMA);
+  var ELEMENT     = String(instance.vars.MEMBER_ELEMENT);
   var OPT_PREFIX  = String(instance.vars.OPT_PREFIX);
   var RUN_ID      = String(instance.vars.runId || "");
   var STRICT      = (String(instance.vars.STRICT_RUNID) === "true");
@@ -100,35 +101,38 @@ if (String(instance.vars.nextAction) === "finish") {
     logInfo("=== Round " + instance.vars.round + " 워커 완료 / sent="
       + sentSum + " / 누적 " + processed + " ===");
 
-    // (변경) sent 누적만으로 finish 하지 않음. Sample pending 잔량 기준
-    var pendingRows = -1;
+    // (변경) 5천만 count 회피. 1건 존재 여부만 확인 (log #31 동일 판단)
+    // countStatus: 1=잔량있음 / 0=없음 / -1=조회실패
+    var countStatus = -1;
     try {
-      var c = xtk.queryDef.create(
-        <queryDef schema={SCHEMA} operation="count">
-          <where><condition expr="@apiYn = 'N'"/></where>
+      var pq = xtk.queryDef.create(
+        <queryDef schema={SCHEMA} operation="select" lineCount="1">
+          <select><node expr="@lineNo"/></select>
+          <where><condition expr="@apiYn = 'N' AND @lineNo >= 1"/></where>
         </queryDef>
       ).ExecuteQuery();
-      pendingRows = parseInt(c.@count, 10) || 0;
+      countStatus = 0;
+      for each (var pr in pq[ELEMENT]) { countStatus = 1; }
     } catch (eCnt) {
-      logError("[Polling] pending count 실패: " + (eCnt.message || eCnt));
+      logError("[Polling] pending 조회 실패: " + (eCnt.message || eCnt));
     }
 
-    instance.vars.pendingRows = pendingRows;
-    logInfo("[Polling] Sample pending=" + pendingRows);
+    instance.vars.pendingExists = countStatus;
+    logInfo("[Polling] pending 존재=" + countStatus);
 
-    if (pendingRows === 0) {
+    // (변경) -1(조회실패)을 최우선 처리. dead branch 제거
+    if (countStatus < 0) {
+      instance.vars.nextAction = "next";
+      logWarning("[Polling] pending 조회 실패 → next (재분배)");
+    } else if (countStatus === 0) {
       instance.vars.nextAction = "finish";
       logInfo("[Polling] 미전송 0건 → finish");
     } else if (GRAND_TOTAL > 0 && processed >= GRAND_TOTAL) {
       instance.vars.nextAction = "finish";
-      logWarning("[Polling] GRAND_TOTAL(" + GRAND_TOTAL + ") 도달. "
-        + "미전송 " + pendingRows + "건 잔존 → 다음 실행");
-    } else if (pendingRows < 0) {
-      instance.vars.nextAction = "next";
-      logWarning("[Polling] count 실패 → next (재분배)");
+      logWarning("[Polling] GRAND_TOTAL(" + GRAND_TOTAL + ") 도달. 미전송 잔존 → 다음 실행");
     } else {
       instance.vars.nextAction = "next";
-      logInfo("[Polling] 미전송 " + pendingRows + "건 → next");
+      logInfo("[Polling] 미전송 잔존 → next");
     }
   }
 }

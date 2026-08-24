@@ -17,6 +17,38 @@ Detail(`wootar:testWooTargetBulkApiDetail`) INSERT를 중단하고, Sample에 `s
 
 ---
 
+## 실행 전 필수 확인
+
+### 1) segId 시딩 완료 (결과 0 이어야 함)
+```sql
+SELECT COUNT(*) FROM wootartestwootargetsample
+WHERE ssegid IS NULL OR btrim(ssegid) = '';
+```
+
+### 2) ingestYm 분포
+```sql
+SELECT singestym, COUNT(*) FROM wootartestwootargetsample
+WHERE sapiyn = 'N' GROUP BY singestym ORDER BY singestym;
+```
+Distributor 는 head.ym 한 달만 처리한다.
+ingestYm 이 N개면 라운드가 N회로 늘고, 회당 POLL_WAIT_SEC(15초)가 추가된다.
+단일 라운드로 끝내려면 ingestYm 이 1개여야 한다.
+
+### 3) apiYn 정합성 (결과 0 이어야 함)
+```sql
+SELECT COUNT(*) FROM wootartestwootargetsample
+WHERE sapiyn IS NULL OR sapiyn NOT IN ('Y','N');
+```
+
+### 4) 인덱스 적용 확인
+```sql
+EXPLAIN SELECT ilineno FROM wootartestwootargetsample
+WHERE sapiyn='N' AND singestym='YYYYMM' ORDER BY ilineno LIMIT 10;
+```
+`idx_pending_queue` 사용이 보여야 한다. Seq Scan 이면 구조 업데이트 재실행.
+
+---
+
 ## 1. 재배포 목록 (순서대로)
 
 ### Phase A — DB/스키마 (Campaign 콘솔 + SQL)
@@ -24,6 +56,11 @@ Detail(`wootar:testWooTargetBulkApiDetail`) INSERT를 중단하고, Sample에 `s
 | # | 대상 | 작업 | 파일 |
 |---|---|---|---|
 | A1 | `wootar:testWooTargetSample` | 스키마 XML 게시 → **구조 업데이트** 마법사 | `schema/testWooTargetSample.xml` |
+
+- idx_queue_pending → **idx_pending_queue** 로 교체 (컬럼 순서 apiYn 선행, FIX-03)
+  구조 업데이트 마법사가 기존 인덱스 DROP + 신규 CREATE 를 수행한다.
+  5천만 행 기준 인덱스 재생성에 수 분 소요.
+
 | A2 | `wootar:testWooTargetBulkApiMaster` | revLink `targetSample` 추가 → 구조 업데이트 | `schema/testWooTargetBulkApiMaster.xml` |
 | A3 | PostgreSQL | 기존 행 apiYn/master 백필 | `sql/01_migration.sql` |
 | A4 | PostgreSQL | segId 청크 시딩 (테스트만) | `sql/02_seed_segid.sql` |
@@ -104,6 +141,10 @@ Detail(`wootar:testWooTargetBulkApiDetail`) INSERT를 중단하고, Sample에 `s
 
 ### 전송 큐 초기화 (재테스트)
 
+- 구조 업데이트를 재실행하면 인덱스가 재생성된다. 완료 후 위 4) 로 재확인할 것.
+- Sample 초기화는 `UPDATE ... SET sapiyn='N', imasterid=0` 만으로 충분하다.
+  Campaign 은 numeric 컬럼에 NULL 을 허용하지 않으므로 0 이 "미연결"의 정상 표현이다.
+
 ```sql
 UPDATE WootarTestWooTargetSample
    SET sapiyn = 'N', imasterid = 0
@@ -136,10 +177,10 @@ SELECT COUNT(*) FROM WootarTestWooTargetSample
  WHERE ssegid IS NULL OR ssegid = '';
 -- → 0
 
--- idx_queue_pending 사용 (구조 업데이트 후)
-EXPLAIN SELECT * FROM WootarTestWooTargetSample
- WHERE sapiyn = 'N' ORDER BY singestym, ilineno LIMIT 100;
--- → Index Scan (wootartestwootargetsample_idx_queue_pending 등)
+-- idx_pending_queue 사용 (구조 업데이트 후)
+EXPLAIN SELECT ilineno FROM wootartestwootargetsample
+ WHERE sapiyn = 'N' AND singestym = 'YYYYMM' ORDER BY ilineno LIMIT 10;
+-- → Index Scan (idx_pending_queue 등)
 
 -- Detail INSERT 차단
 SELECT COUNT(*) FROM wootartestwootargetbulkapidetail;

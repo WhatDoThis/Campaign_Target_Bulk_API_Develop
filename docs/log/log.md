@@ -2,6 +2,8 @@
 
 ## Log Index
 
+46. 2026-08-24 GitHub Develop 리모트 동기화
+45. 2026-08-24 검수 결함 수정 (NTILE LIMIT·폴링 count·인덱스 순서)
 44. 2026-08-24 GitHub Develop 리모트 동기화
 43. 2026-08-21 segId 시딩 SQL ACC 리터럴 구간화
 42. 2026-08-21 스모크 테스트 Sample FK 전환
@@ -48,6 +50,31 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+46. 2026-08-24 GitHub Develop 리모트 동기화
+Purpose: 검수 결함 수정(NTILE·폴링·인덱스·스로틀·스모크)을 origin/main에 올린다.
+Changes:
+
+- NTILE LIMIT 위치·고아 버킷 이월, pending 존재 확인, idx_pending_queue
+- calcThrottleMs 단일화, segId 시딩 조합 테이블, MIGRATION 실행 전 SQL
+Changed files: docs/log/log.md, new_ver/docs/MIGRATION.md, new_ver/js/testWooBulkApiWorker.js, new_ver/schema/testWooTargetSample.xml, new_ver/sql/02_seed_segid.sql, new_ver/test/*.js, new_ver/workflow/factory/*.js
+
+45. 2026-08-24 검수 결함 수정 (NTILE LIMIT·폴링 count·인덱스 순서)
+Purpose: 코드 검수에서 발견된 구간 소실·타임아웃·인덱스 미스매치를 수정한다.
+Changes:
+
+- 01_Distributor: NTILE LIMIT 위치 교정(윈도우 함수 선평가), 버킷 경계 검증, 고아 버킷 이월
+- 02_Polling: 5천만 count 제거(존재 확인 전환), 분기 순서 교정(dead branch 제거)
+- Sample XML: idx_pending_queue 로 교체. apiYn 선행
+- worker: updateSampleSent 갱신 역조회 검증, calcThrottleMs 단일화, DRY 배치명 표식
+- test: 05 Master element 하드코딩 제거, 06 과잉 삭제 제거·조건 순서 정렬
+- sql: 02_seed_segid 조합 테이블 방식(md5 25억→5천회)
+- docs: MIGRATION 실행 전 확인 SQL 4종, state 주석 통일
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/factory/00_Config.js,
+  new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js,
+  new_ver/schema/testWooTargetSample.xml, new_ver/sql/02_seed_segid.sql,
+  new_ver/test/03_SmokeFire.js, new_ver/test/05_SmokeApiTest.js,
+  new_ver/test/06_SmokeVerify.js, new_ver/docs/MIGRATION.md, docs/log/log.md
 
 44. 2026-08-24 GitHub Develop 리모트 동기화
 Purpose: Detail 폐기·Sample FK 전송·마이그레이션 SQL·스모크/Factory 갱신을 origin/main에 올린다.
