@@ -129,9 +129,11 @@ function splitBounds(ymd, wCount, remaining) {
     var s = lo + Math.floor(span * wi / wCount);
     var e = lo + Math.floor(span * (wi + 1) / wCount) - 1;
     if (wi === wCount - 1) e = effHi;
+    // (변경) FIX-41. 빈 버킷도 push 하지 않되 연속성은 보장. span<wCount 시 조기 종료
     if (s >= 1 && e >= s) {
-      bounds.push({ ymd: ymd, s: s, e: e, cnt: e - s + 1, idx: wi });
+      bounds.push({ ymd: ymd, s: s, e: e, cnt: e - s + 1, idx: bounds.length });
     }
+    if (e >= effHi) break;
   }
 
   if (bounds.length < wCount) {
@@ -139,11 +141,14 @@ function splitBounds(ymd, wCount, remaining) {
       + " — remaining=" + remaining);
   }
 
+  // (변경) FIX-41. 불연속은 산술 분할 버그 신호이나 중단 사유 아님 → 보정 후 경고
   var vi;
   for (vi = 1; vi < bounds.length; vi++) {
     if (bounds[vi].s !== bounds[vi - 1].e + 1) {
-      throw new Error("[Distributor] 버킷 불연속 b" + vi + " s=" + bounds[vi].s
-        + " != b" + (vi - 1) + " e+1=" + (bounds[vi - 1].e + 1));
+      logWarning("[Distributor] 버킷 불연속 보정 b" + vi + " " + bounds[vi].s
+        + " → " + (bounds[vi - 1].e + 1));
+      bounds[vi].s = bounds[vi - 1].e + 1;
+      bounds[vi].cnt = bounds[vi].e - bounds[vi].s + 1;
     }
   }
 
@@ -184,6 +189,12 @@ var bounds = splitBounds(head.ymd, W_COUNT, remaining);
 // (변경) 고도화. Config pendingStartCnt 대비 라운드 분배 규모 추적용
 instance.vars.roundPendingCap = remaining;
 var runId  = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S") + "R" + round;
+// (변경) FIX-42. Polling STRICT_RUNID 대조용. 미전파 시 STRICT 검사 무력화
+instance.vars.runId = runId;
+// (변경) FIX-43. 라운드마다 폴링 카운터 리셋. 미리셋 시 MAX_RUN 누적 소진
+instance.vars.pollCount = 0;
+var rr;
+for (rr = 1; rr <= W_COUNT; rr++) { instance.vars["readyRetry_" + rr] = 0; }
 
 function wfStarted(internalName) {
   try {
@@ -262,12 +273,21 @@ for (si = 0; si < liveJobs.length - 1; si++) {
   }
 }
 
+// (변경) FIX-40. 병합 후 불연속은 throw 대신 경계 보정 + 경고.
+// 워커 미시작/버킷 부족은 정상 운영 상황이며, 잔여분은 다음 라운드 pending 으로 회수됨
 var vj;
 for (vj = 1; vj < liveJobs.length; vj++) {
-  if (liveJobs[vj].b.s !== liveJobs[vj - 1].b.e + 1) {
-    throw new Error("[Distributor] 병합 후 구간 불연속 b" + vj + " s=" + liveJobs[vj].b.s
-      + " != b" + (vj - 1) + " e+1=" + (liveJobs[vj - 1].b.e + 1));
+  var gapS = liveJobs[vj - 1].b.e + 1;
+  if (liveJobs[vj].b.s > gapS) {
+    logWarning("[Distributor] 구간 공백 " + gapS + "~" + (liveJobs[vj].b.s - 1)
+      + " → " + liveJobs[vj].name + " 로 흡수");
+    liveJobs[vj].b.s = gapS;
+  } else if (liveJobs[vj].b.s < gapS) {
+    logWarning("[Distributor] 구간 중복 " + liveJobs[vj].b.s + "~" + (gapS - 1)
+      + " → " + liveJobs[vj].name + " 시작점 " + gapS + " 로 보정");
+    liveJobs[vj].b.s = gapS;
   }
+  liveJobs[vj].b.cnt = liveJobs[vj].b.e - liveJobs[vj].b.s + 1;
 }
 
 var fireN  = liveJobs.length;
@@ -303,13 +323,10 @@ for (j = 0; j < fireN; j++) {
   }
 }
 
-instance.vars.runId         = runId;
 instance.vars.activeWorkers = active;
 instance.vars.workerNames   = names.join(",");
 instance.vars.roundSize     = remaining;
-instance.vars.pollCount     = 0;
 instance.vars.nextAction    = (active === 0) ? "finish" : "working";
-for (var rr = 1; rr <= W_COUNT; rr++) instance.vars["readyRetry_" + rr] = 0;
 
 if (active === 0) {
   logWarning("[Distributor] 트리거된 워커 없음 → finish");

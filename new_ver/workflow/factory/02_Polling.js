@@ -164,7 +164,11 @@ if (String(instance.vars.nextAction) === "finish") {
         // (변경) stall >= 3 하드코딩 → MAX_STALL
         if (stall >= MAX_STALL) {
           instance.vars.nextAction = "finish";
-          logError("[Polling] " + MAX_STALL + "라운드 연속 처리량 0 → 강제 종료 processed=" + processed);
+          // (변경) FIX-44. 무진행 원인 명시 — WF 미시작(skip) vs 실제 정체 구분
+          logError("[Polling] " + MAX_STALL + "라운드 연속 처리량 0 → 강제 종료"
+            + " processed=" + processed
+            + " / 워커상태=" + summary.join(", ")
+            + " / skip 다수면 TBAW1~N WF state=11(시작됨) 확인");
         }
       } else {
         instance.vars.stallCount = 0;

@@ -2,6 +2,8 @@
 
 ## Log Index
 
+66. 2026-08-25 GitHub Develop 리모트 동기화
+65. 2026-08-25 FIX-40~44 Factory Distributor·Polling 치명 결함 수정
 64. 2026-08-25 GitHub Develop 리모트 동기화
 63. 2026-08-25 Factory·Worker 운영 고도화
 62. 2026-08-25 GitHub Develop 리모트 동기화
@@ -68,6 +70,24 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+66. 2026-08-25 GitHub Develop 리모트 동기화
+Purpose: FIX-40~44 Factory Distributor·Polling 치명 결함 수정을 origin/main에 올린다.
+Changes:
+
+- splitBounds 보정, runId 즉시 전파, pollCount 리셋, stall 로그 보강
+Changed files: docs/log/log.md, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js
+
+65. 2026-08-25 FIX-40~44 Factory Distributor·Polling 치명 결함 수정
+Purpose: 첫 라운드 throw·STRICT runId·pollCount 누적·stall 오탐 등 Factory 중단 결함 제거.
+Changes:
+
+- FIX-40: 병합 후 불연속 throw → 경계 보정+경고
+- FIX-41: splitBounds 조기 break·버킷 불연속 보정
+- FIX-42: instance.vars.runId 라운드 시작 즉시 전파
+- FIX-43: pollCount·readyRetry 라운드 시작 리셋
+- FIX-44: stall 종료 로그에 워커상태·skip 안내
+Changed files: new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, docs/log/log.md
 
 64. 2026-08-25 GitHub Develop 리모트 동기화
 Purpose: Factory·Worker 운영 고도화(sessionRunId·failed 집계·시그널 가드)를 origin/main에 올린다.
