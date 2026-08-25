@@ -2,6 +2,8 @@
 
 ## Log Index
 
+62. 2026-08-25 GitHub Develop 리모트 동기화
+61. 2026-08-25 FIX-33~39 스모크·라이브러리 결함 수정
 60. 2026-08-25 GitHub Develop 리모트 동기화
 59. 2026-08-25 스모크·Factory ingestYmd/BIZ_DATE/GRAND_TOTAL 정합
 58. 2026-08-25 GitHub Develop 리모트 동기화
@@ -64,6 +66,26 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+62. 2026-08-25 GitHub Develop 리모트 동기화
+Purpose: FIX-33~39 스모크·라이브러리 결함 수정을 origin/main에 올린다.
+Changes:
+
+- lastModified bulkTs/smkTs, Cleanup apiYn 유지, BATCH_SIZE 상한 100k
+Changed files: docs/log/log.md, new_ver/js/testWooBulkApiWorker.js, new_ver/schema/testWooTargetSample.xml, new_ver/test/*.js
+
+61. 2026-08-25 FIX-33~39 스모크·라이브러리 결함 수정
+Purpose: TIM-030009 lastModified, toXMLString, FK/Cleanup 중복전송·패턴 불일치 등 스모크 결함 정리.
+Changes:
+
+- FIX-33: smkTs/bulkTs — lastModified 직접 조립 (02, saveMaster)
+- FIX-34: 07 dumpVars — vars.toXMLString 제거
+- FIX-35: 02 T3 FK 검증 후 try/catch 원복
+- FIX-36: 06 Cleanup apiYn=Y 유지, imasterid만 0
+- FIX-37: 06 DeleteCollection 하이픈 패턴 통일
+- FIX-38: 02/06 MEM_TBL 폴백 wootartestwootargetsample
+- FIX-39: 01 BATCH_SIZE 상한 100000
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/test/01_SmokeConfig.js, new_ver/test/02_SmokeLocal.js, new_ver/test/06_SmokeVerify.js, new_ver/test/07_SmokeSignalWorker.js, docs/log/log.md
 
 60. 2026-08-25 GitHub Develop 리모트 동기화
 Purpose: 스모크·Factory ingestYmd/BIZ_DATE/GRAND_TOTAL 정합을 origin/main에 올린다.

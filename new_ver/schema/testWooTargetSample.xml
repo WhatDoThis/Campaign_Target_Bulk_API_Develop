@@ -27,16 +27,16 @@
     </key>
 
     <!-- 멤버십 UID. Target thirdPartyId. 유니크 아님. 조회용 인덱스만 -->
-    <attribute desc="고객 멤버십 식별자. 동일 UID 복수 행 허용" label="멤버십UID" length="10"
-               name="membershipUid" notNull="true" type="string"/>
+    <attribute desc="고객 멤버십 식별자. 동일 UID 복수 행 허용" label="멤버십UID" length="10" name="membershipUid"
+               notNull="true" type="string"/>
 
     <!-- 전송 큐 키 — 적재월일. 포맷 YYYYMMDD (8자리 숫자, 예: 20260824).
          Factory BIZ_DATE(기준일)와 일치하는 행만 pending·전송 대상.
          기존 테이블에 행이 있으면 notNull 추가 시 PGS-220000 → nullable 유지, 백필 후 적재. -->
-    <attribute desc="적재월일 YYYYMMDD. 일 단위 큐 파티션. Factory 기준일과 비교"
-               label="적재월일" length="8" name="ingestYmd" type="string"/>
-    <attribute desc="적재일 내 전송 일련. 1부터. 기존 행 Default 0 이면 queueLine 유니크 충돌"
-               label="큐일련" name="lineNo" type="long"/>
+    <attribute desc="적재월일 YYYYMMDD. 일 단위 큐 파티션. Factory 기준일과 비교" label="적재월일" length="8"
+               name="ingestYmd" type="string"/>
+    <attribute desc="적재일 내 전송 일련. 1부터. 기존 행 Default 0 이면 queueLine 유니크 충돌" label="큐일련"
+               name="lineNo" type="long"/>
 
     <!-- 마케팅 수신동의 -->
     <attribute desc="마케팅 수신 동의 여부" enum="mConsentEnum" label="마케팅수신동의" length="10"
@@ -65,34 +65,37 @@
                name="apiYn" notNull="true" sqlDefault="'N'" type="string"/>
 
     <!-- 세그 목록. 파이프 구분. 사전 적재(배치 잡/SQL). 워커는 읽기만 -->
-    <attribute desc="세그 식별자 파이프 구분 목록. 사전 적재" label="세그ID"
-               length="255" name="segId" type="string"/>
+    <attribute desc="세그 식별자 파이프 구분 목록. 사전 적재" label="세그ID" length="255" name="segId"
+               type="string"/>
 
     <!-- 전송 배치 FK. 0 = 미전송(어떤 배치와도 미연결). Campaign numeric은 NULL 불가 -->
-    <element externalJoin="true" integrity="neutral" label="전송배치" name="master"
-             revIntegrity="neutral" revLabel="전송큐행" revLink="targetSample"
-             target="wootar:testWooTargetBulkApiMaster" type="link"/>
-
+    <element externalJoin="true" integrity="neutral" label="전송배치" name="master" revIntegrity="neutral"
+             revLabel="전송큐행" revLink="targetSample" target="wootar:testWooTargetBulkApiMaster"
+             type="link"/>
+    
+  
     <!-- apiYn 선행. pending 조회 조건 순서와 idx_pending_queue 일치 -->
     <dbindex name="idx_pending_queue">
       <keyfield xpath="@apiYn"/>
       <keyfield xpath="@ingestYmd"/>
       <keyfield xpath="@lineNo"/>
     </dbindex>
-
-    <!-- 멤버십 UID 조회용 -->
+    
+    <!-- apiYn 선행. pending 조회 조건 순서와 idx_pending_queue 일치 -->
+    <dbindex name="idx_pending_queue">
+      <keyfield xpath="@apiYn"/>
+      <keyfield xpath="@ingestYmd"/>
+      <keyfield xpath="@lineNo"/>
+    </dbindex>
+    
+    <!-- 멤버십 UID 조회용. -->
     <dbindex name="idx_membershipUid">
       <keyfield xpath="@membershipUid"/>
     </dbindex>
-
-    <!-- 큐 일련번호 조회용 -->
+    
+    <!-- 큐 일련번호 조회용. -->
     <dbindex name="idx_lineNo">
       <keyfield xpath="@lineNo"/>
-    </dbindex>
-
-    <!-- 적재월일 단독 조회·집계용 (BIZ_DATE별 pending 분포 등) -->
-    <dbindex name="idx_ingestYmd">
-      <keyfield xpath="@ingestYmd"/>
     </dbindex>
 
   </element>

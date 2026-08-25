@@ -61,7 +61,9 @@ var W_COUNT       = (typeof BULK_CFG !== "undefined") ? parseInt(BULK_CFG.WORKER
 
 ok("MemberSchema 형식", MEMBER_SCHEMA.indexOf(":") > 0, MEMBER_SCHEMA);
 ok("ClientCode 존재", CLIENT_CODE.length > 0, CLIENT_CODE);
-ok("BATCH_SIZE 1~500000", BATCH_SIZE > 0 && BATCH_SIZE <= 500000, "=" + BATCH_SIZE);
+// (변경) FIX-39. FIX-18 기준 80000. 상한 500000 은 오설정을 통과시킴
+ok("BATCH_SIZE 1~100000", BATCH_SIZE > 0 && BATCH_SIZE <= 100000,
+  "=" + BATCH_SIZE + (BATCH_SIZE === 80000 ? " (권장값)" : " ← 권장 80000"));
 ok("LINE_NO_MAX 1~2147483647", LINE_MAX >= 1 && LINE_MAX <= 2147483647,
   isNaN(LINE_MAX) ? "라이브러리에 LINE_NO_MAX 없음 — testWooBulkApiWorker.js 재게시" : "=" + LINE_MAX);
 ok("WORKER_COUNT 1~WORKER_MAX", W_COUNT >= 1, "=" + W_COUNT);

@@ -16,8 +16,14 @@
 
 logInfo(">>> jsWorker 진입");
 
-try { logInfo("  vars          = " + vars.toXMLString()); } catch (e) { logInfo("  vars 접근 불가: " + e.message); }
-try { logInfo("  instance.vars = " + instance.vars.toXMLString()); } catch (e) { logInfo("  instance.vars 접근 불가: " + e.message); }
+// (변경) FIX-34. vars 는 XML 아닌 JS 객체 → toXMLString 없음. 키 나열로 대체
+function dumpVars(label, o) {
+  var a = [];
+  for (var k in o) { a.push(k + "=" + String(o[k])); }
+  logInfo("  " + label + " = " + (a.length ? a.join(" | ") : "(비어있음)"));
+}
+dumpVars("vars", vars);
+if (typeof instance !== "undefined" && instance.vars) dumpVars("instance.vars", instance.vars);
 
 var P = vars;
 if (String(P.workerName || "") === "" && typeof instance !== "undefined") {

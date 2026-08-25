@@ -23,13 +23,21 @@ function ok(n, c, d) {
 }
 function skip(n, w) { logInfo("  [SKIP] " + n + " :: " + w); }
 
+// (변경) FIX-33. %2M 조합이 202608-24 생성 → TIM-030009. 직접 조립으로 회피
+function smkTs() {
+  var d = getCurrentDate();
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "/" + p2(d.getMonth() + 1) + "/" + p2(d.getDate())
+       + " " + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+}
+
 var SCHEMA  = String(instance.vars.smkSchema);
 var ELEMENT = String(instance.vars.smkElement);
 var PENDING = String(instance.vars.smkPending);
 var TAG     = String(instance.vars.smkTag);
 var MASTER  = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MASTER_SCHEMA) : "wootar:testWooTargetBulkApiMaster";
 var MEM_TBL = (typeof BULK_CFG !== "undefined" && BULK_CFG.MEMBER_TABLE)
-  ? String(BULK_CFG.MEMBER_TABLE) : "WootarTestWooTargetSample";
+  ? String(BULK_CFG.MEMBER_TABLE) : "wootartestwootargetsample";
 
 function countOf(schema, cond) {
   var q = "<queryDef schema='" + schema + "' operation='count'>"
@@ -127,7 +135,8 @@ logInfo("=== T3 Schema I/O ===");
 if (instance.vars.smkTSchemaIo !== "1") { skip("T3", "스위치 OFF"); }
 else {
   try {
-    var now = formatDate(new Date(), "%4Y-%2M-%2D %2H:%2N:%2S");
+    // (변경) FIX-33. formatDate %4Y-%2M-%2D 가 TIM-030009 유발 → smkTs 조립
+    var now = smkTs();
     var hasRunId = (instance.vars.smkHasRunId === "1");
     if (hasRunId) {
       xtk.session.Write(
@@ -226,8 +235,12 @@ else {
         "[@master-id]=" + fkId + " [master/@id]=" + pkId
           + " expect=" + masterId + " batchName=" + linkedName);
 
-      sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + prevMaster
-        + " WHERE singestymd='" + linkYmd + "' AND ilineno=" + linkLine);
+      // (변경) FIX-35. 검증 후 원복. 미복원 시 CLEANUP 후 댕글링 FK 잔존
+      try {
+        sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + prevMaster
+          + " WHERE singestymd='" + linkYmd + "' AND ilineno=" + linkLine);
+        logInfo("  [INFO] T3 FK 원복 imasterid=" + prevMaster);
+      } catch (eRb) { logWarning("  T3 FK 원복 실패: " + eRb.toString()); }
       } else {
         skip("Sample master FK", "pending 큐 키 없음");
       }

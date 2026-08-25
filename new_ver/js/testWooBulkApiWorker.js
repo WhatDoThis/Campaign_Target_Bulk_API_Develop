@@ -623,9 +623,17 @@ BulkApiWorker.prototype.callBulkApiPayload = function(payload, rowCount) {
 //   Write는 반환값 없음 → autopk는 batchName으로 재조회
 //   적재 컬럼(batchStatus 등)은 status 잡이 채움. ingestChecked=true 일 때만 기록
 // ============================================================
+// (변경) FIX-33. %2M 조합이 202608-24 생성 → TIM-030009. 직접 조립으로 회피
+function bulkTs() {
+  var d = getCurrentDate();
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "/" + p2(d.getMonth() + 1) + "/" + p2(d.getDate())
+       + " " + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+}
+
 BulkApiWorker.prototype.saveMaster = function(info) {
-  // ACC datetime: %4Y-%2M-%2D 필수. %4Y%2M-%2D 는 202608-24 로 파싱 실패(TIM-030009)
-  var now = formatDate(new Date(), "%4Y-%2M-%2D %2H:%2N:%2S");
+  // (변경) FIX-33. formatDate %4Y-%2M-%2D 가 TIM-030009 유발 → bulkTs 조립
+  var now = bulkTs();
 
   var insertDOM = new DOMDocument(BULK_CFG.MASTER_ELEMENT);
   var root = insertDOM.root;
