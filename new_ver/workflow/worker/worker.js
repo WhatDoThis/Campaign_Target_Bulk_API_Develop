@@ -9,8 +9,9 @@
  * PostEvent complete=false.
  *
  * [Main Functions]
- * 1. report — setOption(optKey, runId|status[|sent|failed])
- * 2. new BulkApiWorker(vars).run() — 예외는 rethrow 하지 않음
+ * 1. resolveSignalParams — PostEvent 필드 명시 추출(for-in 불가 ACC vars 대응)
+ * 2. report — setOption(optKey, runId|status[|sent|failed])
+ * 3. new BulkApiWorker(params).run()
  *
  * [Dependencies]
  * wootar:testWooBulkApiWorker.js, setOption(상태 핸드셰이크만)
@@ -18,14 +19,28 @@
 
 loadLibrary("wootar:testWooBulkApiWorker.js", false);
 
-var P = vars;
-if (String(P.workerName || "") === "" && typeof instance !== "undefined") {
-  P = instance.vars;
+// (변경) 고도화. ACC PostEvent vars 는 for-in 열거 불가 → 필드 명시 추출
+function resolveSignalParams(raw, inst) {
+  var src = raw;
+  if (String(raw.workerName || "") === "" && typeof inst !== "undefined" && inst.vars) {
+    src = inst.vars;
+  }
+  return {
+    workerName:  String(src.workerName || "UNKNOWN"),
+    ingestYmd:   String(src.ingestYmd || ""),
+    bizDate:     String(src.bizDate || ""),
+    lineStart:   String(src.lineStart || ""),
+    lineEnd:     String(src.lineEnd || ""),
+    runId:       String(src.runId || ""),
+    optKey:      String(src.optKey || ("WORKER_DONE_" + String(src.workerName || "UNKNOWN"))),
+    workerCount: String(src.workerCount || "")
+  };
 }
 
-var workerName = String(P.workerName || "UNKNOWN");
-var optKey     = String(P.optKey || ("WORKER_DONE_" + workerName));
-var runId      = String(P.runId || "");
+var P = resolveSignalParams(vars, (typeof instance !== "undefined") ? instance : null);
+var workerName = P.workerName;
+var optKey     = P.optKey;
+var runId      = P.runId;
 
 function report(status, sent, failed) {
   var val = runId ? (runId + "|" + status) : status;
@@ -38,16 +53,29 @@ function report(status, sent, failed) {
 
 try {
   report("running");
+  // (변경) 고도화. 운영 가시성 — 시그널 계약 필드 명시 로그
   logInfo("[" + workerName + "] Signal 수신 / runId=" + runId
     + " / bizDate=" + (P.bizDate || P.ingestYmd || "")
-    + " / " + (P.ingestYmd || "") + " line " + P.lineStart + " ~ " + P.lineEnd
+    + " / ingestYmd=" + P.ingestYmd
+    + " line " + P.lineStart + " ~ " + P.lineEnd
     + " / workerCount=" + P.workerCount);
 
   if (typeof BulkApiWorker !== "function") {
     throw new Error("라이브러리 로드는 됐으나 BulkApiWorker 미정의 — JS 내부명 확인");
   }
 
+  if (!P.ingestYmd || !P.lineStart || !P.lineEnd) {
+    throw new Error("[" + workerName + "] PostEvent 필수 vars 누락"
+      + " ingestYmd=" + P.ingestYmd + " line=" + P.lineStart + "~" + P.lineEnd);
+  }
+
   var worker = new BulkApiWorker(P);
+  logInfo("[" + workerName + "] 시작 준비 / DRY_RUN=" + worker.DRY_RUN
+    + " / batch " + worker.BATCH_SIZE
+    + " / custom=" + (worker.customAttrs && worker.customAttrs.length
+      ? worker.customAttrs.join(",") : "(none)")
+    + " / 스로틀 ~" + worker.MIN_INTERVAL_MS + "ms");
+
   var r = worker.run();
 
   if (r.sent === 0 && r.failed > 0) {
@@ -55,7 +83,8 @@ try {
   }
 
   report("done", r.sent, r.failed);
-  logInfo("[" + workerName + "] 종료 — 성공 " + r.sent + "건 / 실패 " + r.failed + "건");
+  logInfo("[" + workerName + "] 종료 — 성공 " + r.sent + "건 / 실패 " + r.failed
+    + "건 / 배치 " + (r.batches || 0) + "회");
 
 } catch (e) {
   report("error");

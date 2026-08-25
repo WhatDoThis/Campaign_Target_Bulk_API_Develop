@@ -11,8 +11,8 @@
  *
  * [Main Functions]
  * 1. FACTORY_CFG — GRAND_TOTAL·BIZ_DATE·폴링·WF 이름
- * 2. BULK_CFG 정합
- * 3. instance.vars 전파
+ * 2. BULK_CFG 정합·MEMBER_TABLE·pending 시작 건수
+ * 3. instance.vars 전파·sessionRunId
  *
  * [Dependencies]
  * wootar:testWooBulkApiWorker.js
@@ -97,12 +97,39 @@ if (!(roundLimit >= 1)) {
 }
 
 var pendingXPath = "@apiYn = 'N' AND @lineNo >= 1 AND @ingestYmd = '" + bizDate + "'";
-var pendingSql   = "s.sapiyn = 'N' AND s.singestymd = '" + sqlLitCfg(bizDate) + "'";
+var pendingSql   = "s.sapiyn = 'N' AND s.singestymd = '" + sqlLitCfg(bizDate) + "' AND s.ilineno >= 1";
+
+// (변경) 고도화. MEMBER_TABLE 미설정 시 PostgreSQL 물리명(소문자) 폴백
+var memTable = String(BULK_CFG.MEMBER_TABLE || "").replace(/^\s+|\s+$/g, "");
+if (!memTable) {
+  memTable = "wootartestwootargetsample";
+  logWarning("[Config] BULK_CFG.MEMBER_TABLE 비어 있음 — 폴백 " + memTable);
+}
+
+// (변경) 고도화. 실행 시작 pending 건수(부분 인덱스 스코프). 실패해도 Factory 진행
+var pendingStartCnt = -1;
+if (memTable) {
+  try {
+    var cntRs = sqlSelect("row,@cnt:long",
+      "SELECT COUNT(*) AS cnt FROM " + memTable + " s WHERE " + pendingSql);
+    if (cntRs && cntRs.row.length() > 0) {
+      for each (var crow in cntRs.row) {
+        pendingStartCnt = parseInt(String(crow.@cnt || crow.@CNT || 0), 10) || 0;
+      }
+    }
+  } catch (eCnt) {
+    logWarning("[Config] pending COUNT 실패(진행 계속): " + (eCnt.message || eCnt));
+  }
+}
+
+var sessionRunId = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S");
 
 instance.vars.MEMBER_SCHEMA   = schema;
 instance.vars.MEMBER_ELEMENT  = String(BULK_CFG.MEMBER_ELEMENT || schema.split(":")[1]);
-instance.vars.MEMBER_TABLE    = String(BULK_CFG.MEMBER_TABLE || "");
+instance.vars.MEMBER_TABLE    = memTable;
 instance.vars.BIZ_DATE        = bizDate;
+instance.vars.sessionRunId    = sessionRunId;
+instance.vars.pendingStartCnt = pendingStartCnt;
 instance.vars.PENDING_COND     = pendingXPath;
 instance.vars.PENDING_COND_SQL = pendingSql;
 instance.vars.WORKER_COUNT    = wCount;
@@ -122,13 +149,16 @@ instance.vars.STAGGER_POST_MS = parseInt(FACTORY_CFG.STAGGER_POST, 10) || 0;
 instance.vars.POLL_WAIT_SEC   = parseInt(FACTORY_CFG.POLL_WAIT_SEC, 10) || 15;
 instance.vars.round           = 0;
 instance.vars.globalProcessed = 0;
+instance.vars.globalFailed    = 0;
 instance.vars.pollCount       = 0;
 instance.vars.nextAction      = "";
 instance.vars.prevProcessed   = -1;
 instance.vars.stallCount      = 0;
 
-logInfo("[Config] BIZ_DATE=" + bizDate
+logInfo("[Config] sessionRunId=" + sessionRunId
+  + " / BIZ_DATE=" + bizDate
   + (bizDateOverride ? " (hardcode)" : " (auto)")
+  + " / pendingStart=" + (pendingStartCnt >= 0 ? pendingStartCnt : "(조회실패)")
   + " / 워커 " + wCount + "/" + wMax
   + " / batch " + batch
   + " / roundLimit " + instance.vars.ROUND_LIMIT
@@ -136,4 +166,5 @@ logInfo("[Config] BIZ_DATE=" + bizDate
   + (grandTotal === 0 ? " (무제한)" : " (cap)")
   + " / pollWait " + instance.vars.POLL_WAIT_SEC + "s"
   + " / 스로틀 ~" + throttleMs + "ms"
+  + " / table " + memTable
   + " / schema " + schema);

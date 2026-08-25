@@ -112,6 +112,10 @@ function splitBounds(ymd, wCount, remaining) {
   }
   if (lo < 1 || hi < lo) return bounds;
 
+  // (변경) 고도화. 라운드 분할 전 pending 밀집도·라인폭 로그
+  logInfo("[Distributor] pending cnt=" + cnt + " / line " + lo + "~" + hi
+    + (remaining > 0 && cnt > remaining ? " / cap→~" + remaining + "건" : ""));
+
   var effHi = hi;
   if (remaining > 0 && cnt > remaining) {
     var density = (hi - lo + 1) / cnt;
@@ -177,6 +181,8 @@ logInfo("[Distributor] ingestYmd=" + head.ymd + " head line=" + head.line
   + " / 이번 라운드 최대 " + remaining + "건");
 
 var bounds = splitBounds(head.ymd, W_COUNT, remaining);
+// (변경) 고도화. Config pendingStartCnt 대비 라운드 분배 규모 추적용
+instance.vars.roundPendingCap = remaining;
 var runId  = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S") + "R" + round;
 
 function wfStarted(internalName) {

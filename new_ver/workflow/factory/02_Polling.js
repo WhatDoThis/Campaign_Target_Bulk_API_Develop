@@ -6,7 +6,7 @@
  * [Main Functions]
  * 1. Option 파싱 (STRICT runId)
  * 2. countPending — @apiYn='N' 존재 여부 (count 회피)
- * 3. nextAction: working | next | finish
+ * 3. nextAction: working | next | finish + 종료 요약 배너
  *
  * [Dependencies]
  * getOption, xtk.queryDef
@@ -40,6 +40,8 @@ if (String(instance.vars.nextAction) === "finish") {
   var errors   = [];
   var summary  = [];
   var sentSum  = 0;
+  var failedSum = 0;
+  var BIZ_DATE  = String(instance.vars.BIZ_DATE || "");
 
   var w;
   for (w = 1; w <= W_COUNT; w++) {
@@ -52,6 +54,7 @@ if (String(instance.vars.nextAction) === "finish") {
     var optRun = (parts.length > 1) ? parts[0] : "";
     var status = (parts.length > 1) ? parts[1] : parts[0];
     var sent   = (parts.length > 2) ? NUM(parts[2], 0) : 0;
+    var failed = (parts.length > 3) ? NUM(parts[3], 0) : 0;
 
     if (STRICT && RUN_ID !== "" && optRun !== RUN_ID) {
       summary.push(wName + "=stale(" + (status || "none") + ")");
@@ -59,11 +62,15 @@ if (String(instance.vars.nextAction) === "finish") {
       continue;
     }
 
-    summary.push(wName + "=" + (status || "none") + (sent ? ":" + sent : ""));
+    summary.push(wName + "=" + (status || "none")
+      + (sent ? ":" + sent : "") + (failed ? "/f" + failed : ""));
 
     if (status === "done" || status === "skip") {
       instance.vars["readyRetry_" + w] = 0;
-      if (status === "done") sentSum += sent;
+      if (status === "done") {
+        sentSum += sent;
+        failedSum += failed;
+      }
     } else if (status === "error") {
       errors.push(wName);
     } else if (status === "ready") {
@@ -102,8 +109,10 @@ if (String(instance.vars.nextAction) === "finish") {
   } else {
     var processed = NUM(instance.vars.globalProcessed) + sentSum;
     instance.vars.globalProcessed = processed;
+    instance.vars.globalFailed = NUM(instance.vars.globalFailed) + failedSum;
     logInfo("=== Round " + instance.vars.round + " 워커 완료 / sent="
-      + sentSum + " / 누적 " + processed + " ===");
+      + sentSum + " / failed=" + failedSum + " / 누적 sent=" + processed
+      + " failed=" + instance.vars.globalFailed + " ===");
 
     // 전체 count 회피. pending 1건 존재 여부만 확인
     // countStatus: 1=잔량있음 / 0=없음 / -1=조회실패
@@ -161,6 +170,19 @@ if (String(instance.vars.nextAction) === "finish") {
         instance.vars.stallCount = 0;
       }
       instance.vars.prevProcessed = processed;
+    }
+
+    // (변경) 고도화. finish 시 운영 요약 배너 — Status WF·로그 분석용
+    if (String(instance.vars.nextAction) === "finish") {
+      var startCnt = NUM(instance.vars.pendingStartCnt, -1);
+      logInfo("===== [Factory] 종료 =====");
+      logInfo("  sessionRunId=" + String(instance.vars.sessionRunId || "")
+        + " / BIZ_DATE=" + BIZ_DATE
+        + " / rounds=" + roundNo
+        + " / sent=" + processed
+        + " / failed=" + NUM(instance.vars.globalFailed, 0)
+        + " / pendingStart=" + (startCnt >= 0 ? startCnt : "?")
+        + " / pendingRemain=" + (countStatus === 1 ? "Y" : (countStatus === 0 ? "N" : "?")));
     }
   }
 }

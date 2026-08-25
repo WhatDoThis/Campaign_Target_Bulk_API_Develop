@@ -2,6 +2,8 @@
 
 ## Log Index
 
+64. 2026-08-25 GitHub Develop 리모트 동기화
+63. 2026-08-25 Factory·Worker 운영 고도화
 62. 2026-08-25 GitHub Develop 리모트 동기화
 61. 2026-08-25 FIX-33~39 스모크·라이브러리 결함 수정
 60. 2026-08-25 GitHub Develop 리모트 동기화
@@ -66,6 +68,24 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+64. 2026-08-25 GitHub Develop 리모트 동기화
+Purpose: Factory·Worker 운영 고도화(sessionRunId·failed 집계·시그널 가드)를 origin/main에 올린다.
+Changes:
+
+- 00 sessionRunId/pendingStartCnt, 02 종료 배너, worker resolveSignalParams
+Changed files: docs/log/log.md, new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/factory/*.js, new_ver/workflow/worker/worker.js
+
+63. 2026-08-25 Factory·Worker 운영 고도화
+Purpose: ingestYmd 운영 전 Factory/Worker 가시성·시그널 안정성·집계 강화.
+Changes:
+
+- 00_Config: sessionRunId, pendingStartCnt, MEMBER_TABLE 폴백, PENDING_COND_SQL lineNo>=1
+- 01: splitBounds pending cnt/line 로그, roundPendingCap
+- 02: failed 누적·라운드/종료 요약 배너
+- worker.js: resolveSignalParams 명시 추출, 필수 vars 가드, 배치 로그
+- BULK_CFG.MEMBER_TABLE → wootartestwootargetsample
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/workflow/worker/worker.js, new_ver/js/testWooBulkApiWorker.js, docs/log/log.md
 
 62. 2026-08-25 GitHub Develop 리모트 동기화
 Purpose: FIX-33~39 스모크·라이브러리 결함 수정을 origin/main에 올린다.

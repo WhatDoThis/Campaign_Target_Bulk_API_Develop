@@ -74,7 +74,7 @@ var BULK_CFG = {
     // ---- 대상 스키마 (Sample = 전송 큐) ----
     MEMBER_SCHEMA       : "wootar:testWooTargetSample",
     MEMBER_ELEMENT      : "testWooTargetSample",
-    MEMBER_TABLE        : "WootarTestWooTargetSample",   // sqlExec UPDATE 용 물리 테이블
+    MEMBER_TABLE        : "wootartestwootargetsample",   // sqlExec UPDATE 용 물리 테이블(PG 소문자)
 
 
     // ---- 전송 이력 Master (배치 1건 = POST 1회) ----
