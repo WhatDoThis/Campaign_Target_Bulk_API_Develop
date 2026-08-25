@@ -65,13 +65,15 @@ function fetchPendingRow(offset) {
 
 logInfo("=== T2 Schema Reachability ===");
 try {
+  // startLine·orderBy 없이 lineCount=1 만 쓰면 컬렉션이 비는 ACC 빌드 있음
   var probe = xtk.queryDef.create(
-    <queryDef schema={SCHEMA} operation="select" lineCount="1">
+    <queryDef schema={SCHEMA} operation="select" startLine="1" lineCount="1">
       <select><node expr="@membershipUid"/></select>
+      <orderBy><node expr="@membershipUid" sortDesc="false"/></orderBy>
     </queryDef>).ExecuteQuery();
   var probeUid = "";
   for each (var p in probe[ELEMENT]) probeUid = String(p.@membershipUid);
-  ok("Member 조회", probeUid !== "", "uid=" + probeUid + " (전표 count 생략)");
+  ok("Member 조회", probeUid !== "", "uid=" + probeUid);
 } catch (e) { ok("Member 조회", false, e.toString()); }
 
 try {

@@ -1,11 +1,11 @@
 <srcSchema _cs="Test Woo Target Sample (wootar)" created="2026-08-18 07:00:01.952Z"
            createdBy-id="0" entitySchema="xtk:srcSchema" img="xtk:schema.png" label="Test Woo Target Sample"
-           labelSingular="Test Woo Target Sample" lastModified="2026-08-19 04:58:17.345Z"
+           labelSingular="Test Woo Target Sample" lastModified="2026-08-24 04:00:00.000Z"
            mappingType="sql" md5="59DAA9BCF68A530F844606157765B316" modifiedBy-id="0"
            name="testWooTargetSample" namespace="wootar" xtkschema="xtk:srcSchema">
   <createdBy _cs="우해인 (hiwoo)"/>
   <modifiedBy _cs="우해인 (hiwoo)"/>
-  
+
   <!-- 마케팅 수신동의 열거형 -->
   <enumeration basetype="string" label="마켓팅수신동의" name="mConsentEnum">
     <value label="동의" name="agreed" value="동의"/>
@@ -20,9 +20,9 @@
 
   <element autopk="true" label="Test Woo Target Sample" name="testWooTargetSample">
 
-    <!-- 큐 행 유니크. UID는 날짜·세그마다 여러 행 가능 -->
+    <!-- 큐 행 유니크. UID는 적재일·세그마다 여러 행 가능 -->
     <key name="queueLine">
-      <keyfield xpath="@ingestYm"/>
+      <keyfield xpath="@ingestYmd"/>
       <keyfield xpath="@lineNo"/>
     </key>
 
@@ -30,11 +30,12 @@
     <attribute desc="고객 멤버십 식별자. 동일 UID 복수 행 허용" label="멤버십UID" length="10"
                name="membershipUid" notNull="true" type="string"/>
 
-    <!-- 전송 큐 키. 기존 행이 있으면 NOT NULL 추가가 PGS-220000 로 실패한다.
-         구조 업데이트는 nullable. 백필 후 적재 잡·워커가 값을 넣는다. -->
-    <attribute desc="적재월 YYYYMM. 워커 구간은 이 월만. 기존 테이블은 notNull 금지"
-               label="적재월" length="6" name="ingestYm" type="string"/>
-    <attribute desc="월내 적재 일련. 1부터. 기존 행 Default 0 이면 queueLine 유니크 충돌"
+    <!-- 전송 큐 키 — 적재월일. 포맷 YYYYMMDD (8자리 숫자, 예: 20260824).
+         Factory BIZ_DATE(기준일)와 일치하는 행만 pending·전송 대상.
+         기존 테이블에 행이 있으면 notNull 추가 시 PGS-220000 → nullable 유지, 백필 후 적재. -->
+    <attribute desc="적재월일 YYYYMMDD. 일 단위 큐 파티션. Factory 기준일과 비교"
+               label="적재월일" length="8" name="ingestYmd" type="string"/>
+    <attribute desc="적재일 내 전송 일련. 1부터. 기존 행 Default 0 이면 queueLine 유니크 충돌"
                label="큐일련" name="lineNo" type="long"/>
 
     <!-- 마케팅 수신동의 -->
@@ -68,21 +69,30 @@
                length="255" name="segId" type="string"/>
 
     <!-- 전송 배치 FK. 0 = 미전송(어떤 배치와도 미연결). Campaign numeric은 NULL 불가 -->
-    <!-- integrity/revIntegrity = neutral: Master 퍼지 시 Sample 연쇄 변경 방지 -->
-    <!-- externalJoin: masterId=0 행도 조회에 남기기 위한 outer join 강제 -->
     <element externalJoin="true" integrity="neutral" label="전송배치" name="master"
              revIntegrity="neutral" revLabel="전송큐행" revLink="targetSample"
              target="wootar:testWooTargetBulkApiMaster" type="link"/>
 
-    <!-- apiYn 선행. pending 조회 3종 모두 apiYn 등치 조건 — idx_pending_queue 활용 -->
+    <!-- apiYn 선행. pending 조회 조건 순서와 idx_pending_queue 일치 -->
     <dbindex name="idx_pending_queue">
       <keyfield xpath="@apiYn"/>
-      <keyfield xpath="@ingestYm"/>
+      <keyfield xpath="@ingestYmd"/>
       <keyfield xpath="@lineNo"/>
     </dbindex>
 
+    <!-- 멤버십 UID 조회용 -->
     <dbindex name="idx_membershipUid">
       <keyfield xpath="@membershipUid"/>
+    </dbindex>
+
+    <!-- 큐 일련번호 조회용 -->
+    <dbindex name="idx_lineNo">
+      <keyfield xpath="@lineNo"/>
+    </dbindex>
+
+    <!-- 적재월일 단독 조회·집계용 (BIZ_DATE별 pending 분포 등) -->
+    <dbindex name="idx_ingestYmd">
+      <keyfield xpath="@ingestYmd"/>
     </dbindex>
 
   </element>

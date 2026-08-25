@@ -2,6 +2,11 @@
 
 ## Log Index
 
+58. 2026-08-25 GitHub Develop 리모트 동기화
+57. 2026-08-24 라이브러리 ingestYmd + BIZ_DATE 기준일 전환
+56. 2026-08-24 Sample 큐 키 ingestYm → ingestYmd(YYYYMMDD) 스키마·마이그레이션 SQL
+55. 2026-08-24 스모크 T2 Member probe queryDef 페이징 수정
+54. 2026-08-24 saveMaster lastModified formatDate 패턴 수정 (스모크 -53)
 53. 2026-08-24 GitHub Develop 리모트 동기화
 52. 2026-08-24 FIX-21~29 — 산술 분할 후속 결함 정리 및 가드 보강
 51. 2026-08-24 FIX-24~26 : PENDING_COND_SQL 단일화·무진행 가드·uid 범위 조회
@@ -57,6 +62,48 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+58. 2026-08-25 GitHub Develop 리모트 동기화
+Purpose: ingestYmd 큐 키 전환·BIZ_DATE·스모크/Master 수정을 origin/main에 올린다.
+Changes:
+
+- Sample ingestYm→ingestYmd, 03_migrate_ingestYmd.sql, BULK_CFG.BIZ_DATE
+- saveMaster formatDate, T2 probe 페이징, TestResult 고도화 1차
+Changed files: docs/log/log.md, new_ver/docs/TestResult.md, new_ver/js/testWooBulkApiWorker.js, new_ver/schema/*, new_ver/sql/*, new_ver/test/02_SmokeLocal.js
+
+57. 2026-08-24 라이브러리 ingestYmd + BIZ_DATE 기준일 전환
+Purpose: 실운영 일 단위 큐·Factory 기준일 스코프를 워커 라이브러리에 반영.
+Changes:
+
+- BULK_CFG.BIZ_DATE 추가 (빈값=오늘 YYYYMMDD, hardcode 가능)
+- BulkApiWorker.resolveBizDate / resolveIngestYmd
+- queryMembers·updateSampleSent: @ingestYmd / singestymd
+- ingestYmd !== BIZ_DATE 가드
+Changed files: new_ver/js/testWooBulkApiWorker.js, docs/log/log.md
+
+56. 2026-08-24 Sample 큐 키 ingestYm → ingestYmd(YYYYMMDD) 스키마·마이그레이션 SQL
+Purpose: 실운영 일 단위 적재·Factory 기준일 스코프를 위해 큐 키를 적재월일로 전환. ACC 구조 업데이트·백필 절차 정리.
+Changes:
+
+- testWooTargetSample: ingestYm 제거, ingestYmd(length 8) + queueLine·idx_pending_queue 갱신
+- testWooTargetBulkApiDetail: ingestYmd 동기 (Detail 폐기, 스키마만)
+- sql/03_migrate_ingestYmd.sql: ACC 공식 절차·백필·partial index(singestymd) 재생성
+- backfillSampleQueue.sql: singestymd YYYYMMDD 기준
+Changed files: new_ver/schema/testWooTargetSample.xml, new_ver/schema/testWooTargetBulkApiDetail.xml, new_ver/schema/backfillSampleQueue.sql, new_ver/sql/03_migrate_ingestYmd.sql, new_ver/sql/01_migration.sql, docs/log/log.md
+
+55. 2026-08-24 스모크 T2 Member probe queryDef 페이징 수정
+Purpose: lineCount=1 만으로 uid 빈값 → Verify 누적 FAIL. startLine=1 + orderBy 로 1행 확보.
+Changes:
+
+- 02_SmokeLocal T2 Member 조회 probe에 startLine·orderBy 추가
+Changed files: new_ver/test/02_SmokeLocal.js, docs/log/log.md
+
+54. 2026-08-24 saveMaster lastModified formatDate 패턴 수정 (스모크 -53)
+Purpose: TIM-030009 — lastModified 값 202608-24 형식으로 Master Write 실패.
+Changes:
+
+- saveMaster formatDate %4Y%2M-%2D → %4Y-%2M-%2D (T3·Status 와 동일)
+Changed files: new_ver/js/testWooBulkApiWorker.js, docs/log/log.md
 
 53. 2026-08-24 GitHub Develop 리모트 동기화
 Purpose: FIX-21~29 산술 분할·가드·부분 인덱스·주석 정리를 origin/main에 올린다.

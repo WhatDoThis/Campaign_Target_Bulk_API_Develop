@@ -7,12 +7,13 @@
 // 인스턴스 상태는 this. 스로틀은 BulkApiWorker.calcThrottleMs(workerCount).
 //
 // [Main Functions]
-// 1. queryMembers — apiYn='N' + ingestYm/lineNo 커서 + @segId. idx_pending_queue 조건 일치
+// 1. queryMembers — apiYn='N' + ingestYmd(=BIZ_DATE) + lineNo 커서 + @segId. idx_pending_queue 조건 일치
 // 2. buildPayload — batch=thirdPartyId,seg_id[,attr...]. 값은 URL-encode
 // 3. sendSlice — 50MB 초과 분할 + POST + Master + Sample UPDATE
 // 4. callBulkApiPayload — POST v2 + 스로틀 + 429/503 재시도
 // 5. saveMaster / updateSampleSent — Master 1건 + Sample 구간 sqlExec UPDATE
 // 6. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
+// 7. resolveBizDate — BIZ_DATE 해석(빈값=오늘, YYYYMMDD hardcode)
 //
 // [Dependencies]
 // xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer, sqlExec, sqlSelect
@@ -50,6 +51,15 @@ var BULK_CFG = {
     BATCH_SIZE        : 50000,
     MAX_BATCH_ROWS      : 500000,           // profile-bulk-api 공식 행 상한 (하드 가드)
     LINE_NO_MAX         : 2000000000,       // lineNo 가드. ACC long 최대보다 여유. wrap 금지
+
+
+    // ---- 적재 기준일 (Factory·워커 pending 스코프) ----
+    // BIZ_DATE: 오늘(또는 지정일) ingestYmd 와 일치하는 Sample 행만 전송 대상.
+    //   포맷: YYYYMMDD — 8자리 숫자 (예: 20260824). 하이픈·월만(202608) 금지.
+    //   "" (빈값): 실행 시점 오늘 → formatDate(new Date(), "%4Y%2M%2D")
+    //   "20260824": hardcode — 재전송·보정·과거일 배치 시 BULK_CFG 또는 시그널 bizDate
+    // Factory 00_Config / 시그널 bizDate 가 BULK_CFG 보다 우선(워커 생성자 p.bizDate)
+    BIZ_DATE            : "",
 
 
     // ---- 추가 프로필 속성 (Target profile.{name}) ----
@@ -108,7 +118,9 @@ var BULK_CFG = {
 // ============================================================
 // 생성자
 //   p = 시그널 파라미터(vars)
-//   필수: workerName, ingestYm, lineStart, lineEnd
+//   필수: workerName, lineStart, lineEnd
+//   ingestYmd: Factory가 head 적재일 주입. 생략 시 BIZ_DATE(오늘 또는 BULK_CFG.BIZ_DATE)
+//   bizDate: 시그널로 BIZ_DATE override (재전송). 생략 시 BULK_CFG.BIZ_DATE → 오늘
 //   Factory 시그널: runId, workerCount(실발사). batchSize/dryRun/authToken/customAttr 없음
 //   스모크만 선택: batchSize, dryRun, authToken, customAttr
 // ============================================================
@@ -116,7 +128,8 @@ function BulkApiWorker(p) {
   p = p || {};
 
   this.workerName = String(p.workerName || "W0");
-  this.ingestYm   = String(p.ingestYm || "").replace(/^\s+|\s+$/g, "");
+  this.bizDate    = BulkApiWorker.resolveBizDate(p.bizDate);
+  this.ingestYmd  = BulkApiWorker.resolveIngestYmd(p, this.bizDate);
   this.lineStart  = parseInt(p.lineStart, 10);
   this.lineEnd    = parseInt(p.lineEnd, 10);
 
@@ -140,8 +153,12 @@ function BulkApiWorker(p) {
   // 추가 속성: 시그널 customAttr > BULK_CFG.CUSTOM_ATTR
   this.customAttrs = this.parseCustomAttrs(this.resolveCustomAttrRaw(p));
 
-  if (!/^[0-9]{6}$/.test(this.ingestYm)) {
-    throw new Error("[" + this.workerName + "] ingestYm 미주입 또는 YYYYMM 아님: " + this.ingestYm);
+  if (!/^[0-9]{8}$/.test(this.ingestYmd)) {
+    throw new Error("[" + this.workerName + "] ingestYmd 미주입 또는 YYYYMMDD 아님: " + this.ingestYmd);
+  }
+  if (this.ingestYmd !== this.bizDate) {
+    throw new Error("[" + this.workerName + "] ingestYmd(" + this.ingestYmd
+      + ") != BIZ_DATE(" + this.bizDate + ")");
   }
   if (!(this.lineStart >= 1) || !(this.lineEnd >= this.lineStart)) {
     throw new Error("[" + this.workerName + "] lineStart/lineEnd 구간 오류: "
@@ -193,6 +210,39 @@ BulkApiWorker.calcThrottleMs = function(workerCount) {
 };
 
 
+// # 7. resolveBizDate — BIZ_DATE 해석. Factory·워커 공용
+//   override(시그널 bizDate) > BULK_CFG.BIZ_DATE > 오늘(%4Y%2M%2D)
+BulkApiWorker.resolveBizDate = function(override) {
+  var o = String(override === undefined || override === null ? "" : override)
+    .replace(/^\s+|\s+$/g, "");
+  if (o) {
+    if (!/^[0-9]{8}$/.test(o)) {
+      throw new Error("[BulkApiWorker] bizDate 형식 오류(YYYYMMDD 8자리): " + o);
+    }
+    return o;
+  }
+  var cfg = String(BULK_CFG.BIZ_DATE || "").replace(/^\s+|\s+$/g, "");
+  if (cfg) {
+    if (!/^[0-9]{8}$/.test(cfg)) {
+      throw new Error("[BulkApiWorker] BULK_CFG.BIZ_DATE 형식 오류(YYYYMMDD 8자리): " + cfg);
+    }
+    return cfg;
+  }
+  return formatDate(new Date(), "%4Y%2M%2D");
+};
+
+
+// ingestYmd: 시그널 ingestYmd > BIZ_DATE. Factory는 head와 동일값 주입
+BulkApiWorker.resolveIngestYmd = function(p, bizDate) {
+  p = p || {};
+  var raw = String(p.ingestYmd || "").replace(/^\s+|\s+$/g, "");
+  if (!raw) {
+    return bizDate;
+  }
+  return raw;
+};
+
+
 // --- 인증 토큰 해석. 값은 로그에 남기지 않음 ---
 BulkApiWorker.prototype.resolveAuthToken = function(p) {
   var t = String((p && p.authToken) || "").replace(/^\s+|\s+$/g, "");
@@ -215,7 +265,7 @@ BulkApiWorker.prototype.resolveCustomAttrRaw = function(p) {
 //         '["@planName","@phoneNumber"]'
 //         "planName,phoneNumber"
 //   헤더명은 스키마 속성명 그대로 (Target은 대소문자 구분 → profile.planName)
-//   예약(membershipUid, apiYn, seg_id, segId, thirdPartyId, ingestYm, lineNo)은 제외
+//   예약(membershipUid, apiYn, seg_id, segId, thirdPartyId, ingestYmd, lineNo)은 제외
 // ============================================================
 BulkApiWorker.prototype.parseCustomAttrs = function(raw) {
   var s = String(raw === undefined || raw === null ? "" : raw).replace(/^\s+|\s+$/g, "");
@@ -255,7 +305,7 @@ BulkApiWorker.prototype.parseCustomAttrs = function(raw) {
     var key = n.toLowerCase();
     if (key === "membershipuid" || key === "apiyn" || key === "segid"
         || key === "seg_id" || key === "thirdpartyid"
-        || key === "ingestym" || key === "lineno") {
+        || key === "ingestym" || key === "ingestymd" || key === "lineno") {
       logWarning("[" + this.workerName + "] CUSTOM_ATTR 예약 컬럼 제외: @" + n);
       continue;
     }
@@ -343,11 +393,12 @@ BulkApiWorker.prototype.clipSegId = function(seg) {
 
 
 // ============================================================
-// # 1. queryMembers — 같은 ingestYm + lineNo 범위 + 커서 페이징
+// # 1. queryMembers — ingestYmd(=BIZ_DATE) + lineNo 범위 + 커서 페이징
 //   첫 호출: lineStart 이상 / 이후: 직전 배치 마지막 lineNo 초과
 //   orderBy @lineNo ASC. CSV 행 순서 = 적재 일련
 //
-//   [주의] @apiYn = 'N' 만 — idx_pending_queue(apiYn,ingestYm,lineNo) 와 조건 순서 일치
+//   [주의] @apiYn = 'N' — idx_pending_queue(apiYn,ingestYmd,lineNo) 와 조건 순서 일치
+//          @ingestYmd = BIZ_DATE — 다른 적재일 행은 조회하지 않음
 //          apiYn NULL 행은 처리 대상 아님. notNull + sqlDefault='N' 전제
 //   [주의] @segId 는 Sample 사전 적재. 비어 있으면 run()에서 throw
 //   [주의] distinct 미사용 — 같은 UID가 여러 큐 행일 수 있음. 구간은 lineNo
@@ -357,7 +408,7 @@ BulkApiWorker.prototype.queryMembers = function(lastLine, fetchSize) {
   var lo = (lastLine > 0) ? lastLine : this.lineStart;
   var op = (lastLine > 0) ? ">" : ">=";
   var condition = "@apiYn = 'N'"
-    + " AND @ingestYm = '" + this.sqlLit(this.ingestYm) + "'"
+    + " AND @ingestYmd = '" + this.sqlLit(this.ingestYmd) + "'"
     + " AND @lineNo " + op + " " + lo
     + " AND @lineNo <= " + this.lineEnd;
 
@@ -573,7 +624,8 @@ BulkApiWorker.prototype.callBulkApiPayload = function(payload, rowCount) {
 //   적재 컬럼(batchStatus 등)은 status 잡이 채움. ingestChecked=true 일 때만 기록
 // ============================================================
 BulkApiWorker.prototype.saveMaster = function(info) {
-  var now = formatDate(new Date(), "%4Y%2M-%2D %2H:%2N:%2S");
+  // ACC datetime: %4Y-%2M-%2D 필수. %4Y%2M-%2D 는 202608-24 로 파싱 실패(TIM-030009)
+  var now = formatDate(new Date(), "%4Y-%2M-%2D %2H:%2N:%2S");
 
   var insertDOM = new DOMDocument(BULK_CFG.MASTER_ELEMENT);
   var root = insertDOM.root;
@@ -634,7 +686,7 @@ BulkApiWorker.prototype.saveMaster = function(info) {
 //     apiYn='Y' + master-id>0  → 전송 완료
 //     apiYn='N' + master-id>0  → 실패 후 재시도(직전 배치 참조 유지)
 // ============================================================
-BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLine, rowCount) {
+BulkApiWorker.prototype.updateSampleSent = function(masterId, ymd, fromLine, toLine, rowCount) {
   var mid = parseInt(masterId, 10) || 0;
   if (mid === 0) {
     logWarning("[" + this.workerName + "] masterId=0 → Sample 갱신 스킵 (line "
@@ -643,15 +695,15 @@ BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLi
   }
   if (this.DRY_RUN) {
     logInfo("[" + this.workerName + "][DRY_RUN] Sample 갱신 생략 "
-      + ym + " line " + fromLine + "~" + toLine + " master=" + mid);
+      + ymd + " line " + fromLine + "~" + toLine + " master=" + mid);
     return 0;
   }
 
   var usql = "UPDATE " + BULK_CFG.MEMBER_TABLE
     + " SET sapiyn='Y', imasterid=" + mid
-    + " WHERE singestym='" + this.sqlLit(ym) + "'"
+    + " WHERE singestymd='" + this.sqlLit(ymd) + "'"
     + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
-    // (변경) 이 sapiyn='N' 은 pending 정의가 아닌 멱등 가드 — PENDING_COND_SQL 과 무관하게 고정
+    // sapiyn='N' 은 pending 정의가 아닌 멱등 가드 — PENDING_COND_SQL 과 무관하게 고정
     + " AND sapiyn='N'";
 
   // sqlExec UPDATE 영향 행 수 반환 — f-sqlExec.html
@@ -667,7 +719,7 @@ BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLi
   } else {
     // sqlExec 반환 미지원 빌드만 COUNT 역조회 fallback
     var vsql = "SELECT COUNT(*) AS n FROM " + BULK_CFG.MEMBER_TABLE
-      + " WHERE singestym='" + this.sqlLit(ym) + "'"
+      + " WHERE singestymd='" + this.sqlLit(ymd) + "'"
       + " AND ilineno BETWEEN " + fromLine + " AND " + toLine
       + " AND sapiyn='Y' AND imasterid=" + mid;
     try {
@@ -680,7 +732,7 @@ BulkApiWorker.prototype.updateSampleSent = function(masterId, ym, fromLine, toLi
       }
       if (vn !== rowCount) {
         logWarning("[" + this.workerName + "] Sample 갱신 불일치 기대=" + rowCount
-          + " 실제=" + vn + " (" + ym + " line " + fromLine + "~" + toLine + ")");
+          + " 실제=" + vn + " (" + ymd + " line " + fromLine + "~" + toLine + ")");
       }
     } catch (eV) {
       logWarning("[" + this.workerName + "] 갱신 검증 조회 실패: " + (eV.message || eV));
@@ -752,7 +804,7 @@ BulkApiWorker.prototype.sendSlice = function(records) {
       errorMessage:   ""
     });
 
-    this.updateSampleSent(masterId, this.ingestYm, firstLine, endLine, rowCount);
+    this.updateSampleSent(masterId, this.ingestYmd, firstLine, endLine, rowCount);
 
     logInfo("[" + this.workerName + "] POST #" + this.postNo + " 저장 완료 "
       + "(master " + masterId + " / line " + firstLine + "~" + endLine + ")");
@@ -807,7 +859,8 @@ BulkApiWorker.prototype.run = function() {
   var NO_PROGRESS_MAX = 3;
   this.postNo = 0;
 
-  logInfo("[" + this.workerName + "] 시작: " + this.ingestYm
+  logInfo("[" + this.workerName + "] 시작: " + this.ingestYmd
+    + " (BIZ_DATE=" + this.bizDate + ")"
     + " line " + this.lineStart + " ~ " + this.lineEnd
     + " / batch " + this.BATCH_SIZE
     + " / 스로틀 " + this.MIN_INTERVAL_MS + "ms"
