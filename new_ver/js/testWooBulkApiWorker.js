@@ -13,7 +13,7 @@
 // 4. callBulkApiPayload — POST v2 + 스로틀 + 429/503 재시도
 // 5. saveMaster / updateSampleSent — Master 1건 + Sample 구간 sqlExec UPDATE
 // 6. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
-// 7. resolveBizDate — BIZ_DATE 해석(빈값=오늘, YYYYMMDD hardcode)
+// 7. resolveBizDate — BIZ_DATE 해석(시그널/Factory override, 없으면 오늘)
 //
 // [Dependencies]
 // xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer, sqlExec, sqlSelect
@@ -23,12 +23,7 @@
 // ============================================================
 
 
-// ============================================================
-// 환경 설정 — BULK_CFG 에 운영 파라미터 일원화
-//   BULK_ 접두어: loadLibrary는 호출부와 동일 스코프에 로드됨.
-//                 CFG 같은 흔한 이름은 워크플로우 변수와 충돌 위험
-//   xtk:option(getOption/setOption)은 쓰지 않음. 값은 여기 또는 시그널(vars)
-// ============================================================
+// 환경 설정 — BULK_CFG: Target 연동·스키마·재시도·규격 상한 (배분·레이트는 시그널)
 var BULK_CFG = {
 
     // ---- Target 연동 ----
@@ -47,27 +42,8 @@ var BULK_CFG = {
 
 
     // ---- 처리 규모 ----
-    // BATCH_SIZE: queryMembers 1회 fetch 상한. 50MB·500k 이내, nlserver 메모리 피크 고려 — target-limits
-    BATCH_SIZE        : 50000,
     MAX_BATCH_ROWS      : 500000,           // profile-bulk-api 공식 행 상한 (하드 가드)
     LINE_NO_MAX         : 2000000000,       // lineNo 가드. ACC long 최대보다 여유. wrap 금지
-
-
-    // ---- 적재 기준일 (Factory·워커 pending 스코프) ----
-    // BIZ_DATE: 오늘(또는 지정일) ingestYmd 와 일치하는 Sample 행만 전송 대상.
-    //   포맷: YYYYMMDD — 8자리 숫자 (예: 20260824). 하이픈·월만(202608) 금지.
-    //   "" (빈값): 실행 시점 오늘 → formatDate(new Date(), "%4Y%2M%2D")
-    //   "20260824": hardcode — 재전송·보정·과거일 배치 시 BULK_CFG 또는 시그널 bizDate
-    // Factory 00_Config / 시그널 bizDate 가 BULK_CFG 보다 우선(워커 생성자 p.bizDate)
-    BIZ_DATE            : "",
-
-
-    // ---- 추가 프로필 속성 (Target profile.{name}) ----
-    //   기본 전송: thirdPartyId + seg_id (seg_id ← Sample.segId 사전 적재)
-    //   비어 있으면 추가 컬럼 없음
-    //   예: "@planName, @phoneNumber"  또는  '["@planName","@phoneNumber"]'
-    //   시그널 customAttr > 여기 값
-    CUSTOM_ATTR         : "@planName",
     EXTRA_VAL_MAX       : 256,              // target-limits 속성값 256 chars
 
 
@@ -95,17 +71,8 @@ var BULK_CFG = {
 
 
     // ---- 레이트 리밋 방어 ----
-    //   Target 한도: bulk profile update API 50 calls/min, 계정 전체 공유
-    //   초과 시 429 아닌 503 반환
-    //   STATUS_CPM: testWooBulkApiStatus.js 가 동시 실행 시 쓸 예산. 워커는 나머지 45 분할
-    ACCOUNT_CPM         : 50,
-    STATUS_CPM          : 5,
-    WORKER_COUNT        : 3,                // Factory 발사 + 스로틀 기본
-    WORKER_MAX          : 15,
-    SAFETY_RATIO        : 0.9,              // (ACCOUNT_CPM - STATUS_CPM) 예산 중 워커에 할당할 비율
-    STAGGER_SLOT_MS     : 1200,             // 워커 첫 POST 분산. TBAW1=0, TBAW2=1.2s ...
-
-    // 50MB 초과 시 throw 대신 절반 분할 재귀. BATCH_SIZE 를 크게 쓰기 위한 필수 장치
+    //   Target 한도: bulk profile update API 50 calls/min — target-limits
+    //   워커 수·CPM 예산은 Factory/스모크 시그널로 주입
     SPLIT_ON_OVERSIZE   : true,
 
 
@@ -119,10 +86,11 @@ var BULK_CFG = {
 // 생성자
 //   p = 시그널 파라미터(vars)
 //   필수: workerName, lineStart, lineEnd
-//   ingestYmd: Factory가 head 적재일 주입. 생략 시 BIZ_DATE(오늘 또는 BULK_CFG.BIZ_DATE)
-//   bizDate: 시그널로 BIZ_DATE override (재전송). 생략 시 BULK_CFG.BIZ_DATE → 오늘
-//   Factory 시그널: runId, workerCount(실발사). batchSize/dryRun/authToken/customAttr 없음
-//   스모크만 선택: batchSize, dryRun, authToken, customAttr
+//   ingestYmd: Factory가 head 적재일 주입. 생략 시 bizDate(시그널/오늘)
+//   bizDate: 시그널 bizDate > 오늘. Factory FACTORY_CFG.BIZ_DATE → resolveBizDate
+//   Factory·스모크 시그널 필수: runId, workerCount, batchSize, customAttr
+//   레이트: accountCpm, statusCpm, safetyRatio, staggerSlotMs, workerMax
+//   스모크만 선택: dryRun, authToken
 // ============================================================
 function BulkApiWorker(p) {
   p = p || {};
@@ -136,7 +104,11 @@ function BulkApiWorker(p) {
   // runId: 회차 식별자. Distributor가 전 워커에 동일값 주입 시 회차 단위 조회 가능
   this.runId = String(p.runId || formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S"));
 
-  this.BATCH_SIZE = parseInt(p.batchSize, 10) || BULK_CFG.BATCH_SIZE;
+  this.BATCH_SIZE = parseInt(p.batchSize, 10);
+  if (!(this.BATCH_SIZE >= 1)) {
+    throw new Error("[" + this.workerName + "] batchSize 필수(양의 정수): " + p.batchSize);
+  }
+  this.customAttrSrc = String(p.customAttr !== undefined && p.customAttr !== null ? p.customAttr : "");
 
   // DRY_RUN: API 전송 + Sample 갱신만 생략. 조회/CSV조립/Master(드라이)는 수행
   this.DRY_RUN = (String(p.dryRun || "") === "true");
@@ -150,8 +122,7 @@ function BulkApiWorker(p) {
   // 토큰: 시그널 authToken > BULK_CFG.AUTH_TOKEN (Profile API 토큰). 둘 다 비면 헤더 생략
   this.authToken = this.resolveAuthToken(p);
 
-  // 추가 속성: 시그널 customAttr > BULK_CFG.CUSTOM_ATTR
-  this.customAttrs = this.parseCustomAttrs(this.resolveCustomAttrRaw(p));
+  this.customAttrs = this.parseCustomAttrs(this.customAttrSrc);
 
   if (!/^[0-9]{8}$/.test(this.ingestYmd)) {
     throw new Error("[" + this.workerName + "] ingestYmd 미주입 또는 YYYYMMDD 아님: " + this.ingestYmd);
@@ -175,13 +146,14 @@ function BulkApiWorker(p) {
   }
 
   // 스로틀 = 60초 / ((ACCOUNT_CPM - STATUS_CPM) × SAFETY_RATIO / 워커수)
-  // 워커 3·SAFETY_RATIO 0.9 기준 약 4,445ms — target-limits 50 calls/min
-  var workerCount = parseInt(p.workerCount, 10) || BULK_CFG.WORKER_COUNT;
-  if (workerCount < 1) workerCount = 1;
-  var wmax = parseInt(BULK_CFG.WORKER_MAX, 10) || 15;
+  var workerCount = parseInt(p.workerCount, 10);
+  if (!(workerCount >= 1)) {
+    throw new Error("[" + this.workerName + "] workerCount 필수(양의 정수): " + p.workerCount);
+  }
+  var wmax = parseInt(p.workerMax, 10) || 15;
   if (workerCount > wmax) {
     logWarning("[" + this.workerName + "] workerCount " + workerCount
-      + " > WORKER_MAX " + wmax + " → 스로틀을 " + wmax + " 기준으로 계산");
+      + " > workerMax " + wmax + " → 스로틀을 " + wmax + " 기준으로 계산");
     workerCount = wmax;
   }
   this.workerCount = workerCount;
@@ -189,44 +161,43 @@ function BulkApiWorker(p) {
   var nm = String(this.workerName || "").match(/([0-9]+)$/);
   if (nm) this.workerIndex = parseInt(nm[1], 10) || 0;
 
-  this.MIN_INTERVAL_MS = BulkApiWorker.calcThrottleMs(workerCount);   // Factory 00_Config 와 동일 공식
+  this.staggerSlotMs = parseInt(p.staggerSlotMs, 10) || 1200;
+  this.MIN_INTERVAL_MS = BulkApiWorker.calcThrottleMs(workerCount, {
+    ACCOUNT_CPM  : p.accountCpm,
+    STATUS_CPM   : p.statusCpm,
+    SAFETY_RATIO : p.safetyRatio
+  });
 
   this.lastCallMs = 0;    // 직전 API 호출 시각. 0 = 미호출
   this.lastAttempt = 0;   // 직전 배치의 실제 시도 횟수. 실패 Master 기록용
 }
 
 
-// 워커·Factory Config 공용 스로틀(ms). (ACCOUNT_CPM - STATUS_CPM) × SAFETY_RATIO / workerCount
-// target-limits: bulk profile update 50 calls/min, 초과 시 503
-BulkApiWorker.calcThrottleMs = function(workerCount) {
+BulkApiWorker.calcThrottleMs = function(workerCount, ovr) {
+  var o = ovr || {};
+  function v(k, d) {
+    var raw = o[k];
+    if (raw === undefined || raw === null || raw === "") return d;
+    var n = parseFloat(raw);
+    return isNaN(n) ? d : n;
+  }
   var wc = parseInt(workerCount, 10) || 1;
   if (wc < 1) wc = 1;
-  var budget = parseInt(BULK_CFG.ACCOUNT_CPM, 10) - parseInt(BULK_CFG.STATUS_CPM, 10);
-  if (!(budget > 0)) budget = 1;
-  var cpm = (budget * BULK_CFG.SAFETY_RATIO) / wc;
-  // 설정 오타로 0 이 되면 60000/0 → Infinity → sleep 무한 대기
-  if (!(cpm > 0)) cpm = 1;
-  return Math.ceil(60000 / cpm);
+  var budget = (v("ACCOUNT_CPM", 50) - v("STATUS_CPM", 5)) * v("SAFETY_RATIO", 0.9);
+  var perWorkerCpm = budget / wc;
+  if (perWorkerCpm < 1) perWorkerCpm = 1;
+  return Math.ceil(60000 / perWorkerCpm);
 };
 
 
 // # 7. resolveBizDate — BIZ_DATE 해석. Factory·워커 공용
-//   override(시그널 bizDate) > BULK_CFG.BIZ_DATE > 오늘(%4Y%2M%2D)
+//   override(시그널 bizDate) > 오늘(%4Y%2M%2D)
 BulkApiWorker.resolveBizDate = function(override) {
-  var o = String(override === undefined || override === null ? "" : override)
-    .replace(/^\s+|\s+$/g, "");
-  if (o) {
-    if (!/^[0-9]{8}$/.test(o)) {
-      throw new Error("[BulkApiWorker] bizDate 형식 오류(YYYYMMDD 8자리): " + o);
-    }
-    return o;
-  }
-  var cfg = String(BULK_CFG.BIZ_DATE || "").replace(/^\s+|\s+$/g, "");
-  if (cfg) {
-    if (!/^[0-9]{8}$/.test(cfg)) {
-      throw new Error("[BulkApiWorker] BULK_CFG.BIZ_DATE 형식 오류(YYYYMMDD 8자리): " + cfg);
-    }
-    return cfg;
+  var v = String(override === undefined || override === null ? "" : override)
+            .replace(/^\s+|\s+$/g, "");
+  if (/^[0-9]{8}$/.test(v)) return v;
+  if (v) {
+    throw new Error("[BulkApiWorker] bizDate 형식 오류(YYYYMMDD 8자리): " + v);
   }
   return formatDate(new Date(), "%4Y%2M%2D");
 };
@@ -253,9 +224,8 @@ BulkApiWorker.prototype.resolveAuthToken = function(p) {
 
 // --- CUSTOM_ATTR 원문. 값은 속성명만, 고객 데이터 아님 ---
 BulkApiWorker.prototype.resolveCustomAttrRaw = function(p) {
-  var t = String((p && p.customAttr) || "").replace(/^\s+|\s+$/g, "");
-  if (t) return t;
-  return String(BULK_CFG.CUSTOM_ATTR || "").replace(/^\s+|\s+$/g, "");
+  return String((p && p.customAttr !== undefined && p.customAttr !== null ? p.customAttr : ""))
+    .replace(/^\s+|\s+$/g, "");
 };
 
 
@@ -489,7 +459,7 @@ BulkApiWorker.prototype.throttle = function() {
   }
 
   if (this.lastCallMs === 0) {
-    var slot = parseInt(BULK_CFG.STAGGER_SLOT_MS, 10) || 1200;
+    var slot = this.staggerSlotMs || 1200;
     var idx  = this.workerIndex || 0;
     var wait = (idx > 1) ? ((idx - 1) * slot) : 0;
     if (wait > 0) {
@@ -623,7 +593,7 @@ BulkApiWorker.prototype.callBulkApiPayload = function(payload, rowCount) {
 //   Write는 반환값 없음 → autopk는 batchName으로 재조회
 //   적재 컬럼(batchStatus 등)은 status 잡이 채움. ingestChecked=true 일 때만 기록
 // ============================================================
-// (변경) FIX-33. %2M 조합이 202608-24 생성 → TIM-030009. 직접 조립으로 회피
+// formatDate %4Y-%2M-%2D 는 TIM-030009 유발 가능 → 직접 조립
 function bulkTs() {
   var d = getCurrentDate();
   function p2(n) { return (n < 10 ? "0" : "") + n; }
@@ -632,7 +602,6 @@ function bulkTs() {
 }
 
 BulkApiWorker.prototype.saveMaster = function(info) {
-  // (변경) FIX-33. formatDate %4Y-%2M-%2D 가 TIM-030009 유발 → bulkTs 조립
   var now = bulkTs();
 
   var insertDOM = new DOMDocument(BULK_CFG.MASTER_ELEMENT);
@@ -861,7 +830,7 @@ BulkApiWorker.prototype.run = function() {
   var batchNo = 0;      // queryMembers fetch 횟수
   var lastLine = 0;
   var errorCount = 0;   // 연속 실패 카운터. 성공 시 리셋
-  // (변경) lastLine 무진행 감지. 동일 lastLine 이 반복되면 즉시 중단
+  // lastLine 무진행 감지. 동일 lastLine 이 반복되면 즉시 중단
   var prevLastLine = -1;
   var noProgress = 0;
   var NO_PROGRESS_MAX = 3;
@@ -897,7 +866,6 @@ BulkApiWorker.prototype.run = function() {
           this.readXmlAttr(m, this.customAttrs[ei])
         );
       }
-      // (변경) lineNo NaN 방어. 무진행 원인 1순위
       var ln = parseInt(String(m.@lineNo), 10);
       if (isNaN(ln)) {
         throw new Error("[" + this.workerName + "] lineNo 파싱 실패 uid=" + m.@membershipUid);
@@ -940,7 +908,6 @@ BulkApiWorker.prototype.run = function() {
     // 커서 전진 (성공/실패 무관)
     lastLine = batchRecords[count - 1].line;
 
-    // (변경) 진행 여부 판정. batchRecords 는 있는데 lastLine 이 안 늘면 무진행
     if (lastLine <= prevLastLine) {
       noProgress++;
       logWarning("[" + this.workerName + "] lastLine 무진행 " + noProgress

@@ -3,7 +3,8 @@
  * ============================================================================
  * pending @apiYn='N' + BIZ_DATE(ingestYmd) 를 lineNo MIN/MAX 등분으로 워커 구간 분할.
  *
- * PostEvent vars: workerName, ingestYmd, bizDate, lineStart, lineEnd, runId, optKey, workerCount
+ * PostEvent vars: workerName, ingestYmd, bizDate, lineStart, lineEnd, runId, optKey,
+ *   workerCount, workerMax, batchSize, customAttr, accountCpm, statusCpm, safetyRatio, staggerSlotMs
  *
  * [Main Functions]
  * 1. pending 첫 행·remaining 상한
@@ -112,7 +113,6 @@ function splitBounds(ymd, wCount, remaining) {
   }
   if (lo < 1 || hi < lo) return bounds;
 
-  // (변경) 고도화. 라운드 분할 전 pending 밀집도·라인폭 로그
   logInfo("[Distributor] pending cnt=" + cnt + " / line " + lo + "~" + hi
     + (remaining > 0 && cnt > remaining ? " / cap→~" + remaining + "건" : ""));
 
@@ -129,7 +129,6 @@ function splitBounds(ymd, wCount, remaining) {
     var s = lo + Math.floor(span * wi / wCount);
     var e = lo + Math.floor(span * (wi + 1) / wCount) - 1;
     if (wi === wCount - 1) e = effHi;
-    // (변경) FIX-41. 빈 버킷도 push 하지 않되 연속성은 보장. span<wCount 시 조기 종료
     if (s >= 1 && e >= s) {
       bounds.push({ ymd: ymd, s: s, e: e, cnt: e - s + 1, idx: bounds.length });
     }
@@ -141,7 +140,6 @@ function splitBounds(ymd, wCount, remaining) {
       + " — remaining=" + remaining);
   }
 
-  // (변경) FIX-41. 불연속은 산술 분할 버그 신호이나 중단 사유 아님 → 보정 후 경고
   var vi;
   for (vi = 1; vi < bounds.length; vi++) {
     if (bounds[vi].s !== bounds[vi - 1].e + 1) {
@@ -186,12 +184,9 @@ logInfo("[Distributor] ingestYmd=" + head.ymd + " head line=" + head.line
   + " / 이번 라운드 최대 " + remaining + "건");
 
 var bounds = splitBounds(head.ymd, W_COUNT, remaining);
-// (변경) 고도화. Config pendingStartCnt 대비 라운드 분배 규모 추적용
 instance.vars.roundPendingCap = remaining;
 var runId  = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S") + "R" + round;
-// (변경) FIX-42. Polling STRICT_RUNID 대조용. 미전파 시 STRICT 검사 무력화
 instance.vars.runId = runId;
-// (변경) FIX-43. 라운드마다 폴링 카운터 리셋. 미리셋 시 MAX_RUN 누적 소진
 instance.vars.pollCount = 0;
 var rr;
 for (rr = 1; rr <= W_COUNT; rr++) { instance.vars["readyRetry_" + rr] = 0; }
@@ -273,8 +268,6 @@ for (si = 0; si < liveJobs.length - 1; si++) {
   }
 }
 
-// (변경) FIX-40. 병합 후 불연속은 throw 대신 경계 보정 + 경고.
-// 워커 미시작/버킷 부족은 정상 운영 상황이며, 잔여분은 다음 라운드 pending 으로 회수됨
 var vj;
 for (vj = 1; vj < liveJobs.length; vj++) {
   var gapS = liveJobs[vj - 1].b.e + 1;
@@ -309,7 +302,14 @@ for (j = 0; j < fireN; j++) {
         lineEnd={String(job.b.e)}
         runId={runId}
         optKey={job.key}
-        workerCount={String(fireN)}/>,
+        workerCount={String(fireN)}
+        workerMax={String(instance.vars.WORKER_MAX || "")}
+        batchSize={String(instance.vars.BATCH_SIZE || "")}
+        customAttr={String(instance.vars.CUSTOM_ATTR || "")}
+        accountCpm={String(instance.vars.ACCOUNT_CPM || "")}
+        statusCpm={String(instance.vars.STATUS_CPM || "")}
+        safetyRatio={String(instance.vars.SAFETY_RATIO || "")}
+        staggerSlotMs={String(instance.vars.STAGGER_SLOT_MS || "")}/>,
       false
     );
     active++;

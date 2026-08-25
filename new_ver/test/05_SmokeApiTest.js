@@ -125,8 +125,7 @@ if (instance.vars.smkTApi !== "1") {
       instance.vars.smkFetchUrl = fetchUrl;
       logInfo("  Postman Fetch GET " + fetchUrl);
       logInfo("  기대 profile.seg_id = " + expectSeg
-        + ((typeof BULK_CFG !== "undefined" && BULK_CFG.CUSTOM_ATTR)
-          ? " / CUSTOM_ATTR=" + BULK_CFG.CUSTOM_ATTR : ""));
+        + " / CUSTOM_ATTR=" + (String(instance.vars.smkCustomAttr || "") || "(none)"));
 
       var freq = new HttpClientRequest(fetchUrl);
       freq.method = "GET";

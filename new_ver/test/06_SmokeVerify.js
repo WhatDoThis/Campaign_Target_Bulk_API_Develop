@@ -102,13 +102,11 @@ if (instance.vars.smkCleanup !== "1") { logInfo("  [SKIP] DO_CLEANUP=false"); }
 else {
   try {
     if (ymd && lineS >= 1 && lineE >= lineS) {
-      // (변경) FIX-36. 실전송 성공 행은 apiYn=Y 유지. FK 만 해제해야 Master 삭제와 정합
       sqlExec("UPDATE " + MEM_TBL + " SET imasterid=0"
         + " WHERE singestymd='" + ymd + "' AND ilineno BETWEEN " + lineS + " AND " + lineE);
       ok("Sample master FK 해제(apiYn=Y 유지)", true, ymd + " line " + lineS + "~" + lineE);
     }
     if (RUN_ID) {
-      // (변경) FIX-37. 05 조회 패턴과 동일하게 하이픈 포함으로 통일
       xtk.session.DeleteCollection(MASTER,
         <where><condition expr={"@batchName LIKE 'SMOKE-" + RUN_ID
           + "-%' OR @batchName LIKE 'SMOKE-LOCAL-" + RUN_ID + "-%'"}/></where>, false);

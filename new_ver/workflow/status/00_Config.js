@@ -36,7 +36,7 @@ instance.vars.MAX_RUN_POLL   = parseInt(STATUS_CFG.MAX_RUN_POLL, 10) || 180;
 instance.vars.pollCount      = 0;
 instance.vars.nextAction     = "";
 
-var cpm = (BULK_CFG.ACCOUNT_CPM * BULK_CFG.SAFETY_RATIO);
+var cpm = (parseFloat(STATUS_CFG.STATUS_CPM) || 5) * (parseFloat(STATUS_CFG.SAFETY_RATIO) || 0.9);
 var throttleMs = Math.ceil(60000 / (cpm > 0 ? cpm : 1));
 
 logInfo("[StatusConfig] chunk=" + chunk

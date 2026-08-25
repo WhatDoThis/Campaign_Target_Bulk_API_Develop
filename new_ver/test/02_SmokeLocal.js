@@ -23,7 +23,6 @@ function ok(n, c, d) {
 }
 function skip(n, w) { logInfo("  [SKIP] " + n + " :: " + w); }
 
-// (변경) FIX-33. %2M 조합이 202608-24 생성 → TIM-030009. 직접 조립으로 회피
 function smkTs() {
   var d = getCurrentDate();
   function p2(n) { return (n < 10 ? "0" : "") + n; }
@@ -135,7 +134,6 @@ logInfo("=== T3 Schema I/O ===");
 if (instance.vars.smkTSchemaIo !== "1") { skip("T3", "스위치 OFF"); }
 else {
   try {
-    // (변경) FIX-33. formatDate %4Y-%2M-%2D 가 TIM-030009 유발 → smkTs 조립
     var now = smkTs();
     var hasRunId = (instance.vars.smkHasRunId === "1");
     if (hasRunId) {
@@ -235,7 +233,6 @@ else {
         "[@master-id]=" + fkId + " [master/@id]=" + pkId
           + " expect=" + masterId + " batchName=" + linkedName);
 
-      // (변경) FIX-35. 검증 후 원복. 미복원 시 CLEANUP 후 댕글링 FK 잔존
       try {
         sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + prevMaster
           + " WHERE singestymd='" + linkYmd + "' AND ilineno=" + linkLine);
@@ -262,8 +259,7 @@ else {
     if (head.line < 1) {
       ok("큐 키 백필", false, "lineNo<1 — backfillSampleQueue.sql 실행 후 재시도");
     } else {
-      var wCnt = (typeof BULK_CFG !== "undefined")
-        ? (parseInt(BULK_CFG.WORKER_COUNT, 10) || 5) : 5;
+      var wCnt = parseInt(instance.vars.smkWorkerCount, 10) || 3;
       var remaining = parseInt(instance.vars.smkLimit, 10) || 300;
       var perOff = Math.ceil(remaining / wCnt);
       var marks = [], mi;
@@ -299,13 +295,10 @@ else {
 logInfo("=== T5 Payload Spec ===");
 var seg = "w01|w02|w03|w04|w05|w06|w07|w08|w09|w10|w11|w12";
 var enc = encodeURIComponent(seg);
-var extraHead = "";
-if (typeof BULK_CFG !== "undefined") {
-  extraHead = String(BULK_CFG.CUSTOM_ATTR || "").replace(/@/g, "").replace(/\s/g, "");
-}
+var extraHead = String(instance.vars.smkCustomAttr || "").replace(/@/g, "").replace(/\s/g, "");
 var head = "batch=thirdPartyId,seg_id" + (extraHead ? "," + extraHead : "") + "\n";
 var row  = "U000000001," + enc + "\n";
-var bs = (typeof BULK_CFG !== "undefined") ? (parseInt(BULK_CFG.BATCH_SIZE, 10) || 5000) : 5000;
+var bs = parseInt(instance.vars.smkBatchSize, 10) || 5000;
 var cap = (typeof BULK_CFG !== "undefined") ? (parseInt(BULK_CFG.LIMIT_FILE_BYTES, 10) || (50 * 1024 * 1024)) : (50 * 1024 * 1024);
 ok("파이프 인코딩", enc.indexOf("%7C") >= 0, enc.substring(0, 24) + "...");
 ok("batch= 프리픽스", head.indexOf("batch=") === 0, head.replace(/\n/g, ""));
@@ -360,14 +353,21 @@ else {
       var tail = fetchPendingRow(lim - 1);
       var ln1 = (tail.line >= 1 && tail.ymd === ymd0) ? tail.line : (ln0 + lim - 1);
       var wdry = new BulkApiWorker({
-        workerName:  "SMOKE-LOCAL",
-        ingestYmd:   ymd0,
-        bizDate:     String(instance.vars.smkBizDate || ymd0),
-        lineStart:   String(ln0),
-        lineEnd:     String(ln1),
-        runId:       String(instance.vars.smkRunId),
-        dryRun:      "true",
-        workerCount: "1"
+        workerName:    "SMOKE-LOCAL",
+        ingestYmd:     ymd0,
+        bizDate:       String(instance.vars.smkBizDate || ymd0),
+        lineStart:     String(ln0),
+        lineEnd:       String(ln1),
+        runId:         String(instance.vars.smkRunId),
+        dryRun:        "true",
+        workerCount:   "1",
+        workerMax:     String(instance.vars.smkWorkerMax || "15"),
+        batchSize:     String(instance.vars.smkBatchSize),
+        customAttr:    String(instance.vars.smkCustomAttr || ""),
+        accountCpm:    String(instance.vars.smkAccountCpm || "50"),
+        statusCpm:     String(instance.vars.smkStatusCpm || "5"),
+        safetyRatio:   String(instance.vars.smkSafetyRatio || "0.9"),
+        staggerSlotMs: String(instance.vars.smkStaggerSlotMs || "1200")
       });
       var rd = wdry.run();
       ok("library dryRun 예외 없음", true, "sent=" + rd.sent + " fail=" + rd.failed + " batches=" + rd.batches);

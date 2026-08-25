@@ -2,6 +2,9 @@
 
 ## Log Index
 
+69. 2026-08-25 GitHub Develop 리모트 동기화
+68. 2026-08-25 설정 소유권 정리 — SMOKE_CFG / FACTORY_CFG / BULK_CFG 분리
+67. 2026-08-25 FIX-45~50 설정 소유권 Factory/BULK_CFG 재배치
 66. 2026-08-25 GitHub Develop 리모트 동기화
 65. 2026-08-25 FIX-40~44 Factory Distributor·Polling 치명 결함 수정
 64. 2026-08-25 GitHub Develop 리모트 동기화
@@ -70,6 +73,35 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+69. 2026-08-25 GitHub Develop 리모트 동기화
+Purpose: SMOKE_CFG/FACTORY_CFG/BULK_CFG 설정 소유권 분리를 origin/main에 올린다.
+Changes:
+
+- BULK_CFG 정리, 스모크·Factory·worker 시그널 필수화, STATUS_CFG 분리
+Changed files: docs/log/log.md, new_ver/js/*.js, new_ver/test/*.js, new_ver/workflow/**
+
+68. 2026-08-25 설정 소유권 정리 — SMOKE_CFG / FACTORY_CFG / BULK_CFG 분리
+Purpose: 스모크·Factory 튜닝값을 라이브러리 BULK_CFG 에서 분리하고 v1.0 코드에서 히스토리형 주석 제거.
+Changes:
+
+- BULK_CFG: BATCH_SIZE/WORKER/CUSTOM_ATTR/CPM 등 Factory·스모크 전용 항목 삭제
+- BulkApiWorker: batchSize·workerCount·customAttr·레이트 파라미터 시그널 필수, BULK_CFG fallback 제거
+- 01_SmokeConfig: SMOKE_* 배분·레이트·속성 정의 및 instance.vars 전파
+- Factory 00/01/worker: FACTORY_CFG 단일 소스, PostEvent 레이트 필드 추가
+- testWooBulkApiStatus: STATUS_CPM/SAFETY_RATIO 를 STATUS_CFG 로 이동
+- workflow·test·js 전역 (변경)/FIX-XX/고도화 주석 제거
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/js/testWooBulkApiStatus.js, new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/workflow/worker/worker.js, new_ver/workflow/status/00_Config.js, new_ver/test/01_SmokeConfig.js, new_ver/test/02_SmokeLocal.js, new_ver/test/03_SmokeFire.js, new_ver/test/05_SmokeApiTest.js, new_ver/test/06_SmokeVerify.js, new_ver/test/07_SmokeSignalWorker.js, docs/log/log.md
+
+67. 2026-08-25 FIX-45~50 설정 소유권 Factory/BULK_CFG 재배치
+Purpose: WORKER/BATCH/CUSTOM_ATTR/레이트 예산을 FACTORY_CFG 로 이동, BULK_CFG.BIZ_DATE 제거.
+Changes:
+
+- 00_Config: FACTORY_CFG 확장, pick() 우선 해석, ROUND_CAP clamp, vars 전파
+- testWooBulkApiWorker: calcThrottleMs(ovr), resolveBizDate 단순화, pickP batch/customAttr
+- 01 PostEvent batchSize/customAttr, worker resolveSignalParams 동기화
+- 01_SmokeConfig BIZ_DATE 주석 정리
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/worker/worker.js, new_ver/js/testWooBulkApiWorker.js, new_ver/test/01_SmokeConfig.js, docs/log/log.md
 
 66. 2026-08-25 GitHub Develop 리모트 동기화
 Purpose: FIX-40~44 Factory Distributor·Polling 치명 결함 수정을 origin/main에 올린다.

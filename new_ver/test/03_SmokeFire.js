@@ -132,8 +132,14 @@ if (instance.vars.smkTSignal !== "1") {
             runId={RUN_ID}
             optKey={OPT_KEY}
             batchSize={String(uids.length)}
+            customAttr={String(instance.vars.smkCustomAttr || "")}
             dryRun="false"
             workerCount="1"
+            workerMax={String(instance.vars.smkWorkerMax || "15")}
+            accountCpm={String(instance.vars.smkAccountCpm || "50")}
+            statusCpm={String(instance.vars.smkStatusCpm || "5")}
+            safetyRatio={String(instance.vars.smkSafetyRatio || "0.9")}
+            staggerSlotMs={String(instance.vars.smkStaggerSlotMs || "1200")}
             authToken=""/>;
 
         logInfo("  실전송 발사: " + ymd + " line " + lineStart + " ~ " + lineEnd

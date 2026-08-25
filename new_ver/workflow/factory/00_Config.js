@@ -1,7 +1,7 @@
 /* ============================================================================
  * TBAWFactory / 00_Config (Factory 설정)
  * ============================================================================
- * 연동 값은 BULK_CFG. 라운드·폴링·WF 이름·BIZ_DATE·GRAND_TOTAL.
+ * 연동 값: FACTORY_CFG(배분·레이트·라운드) + BULK_CFG(스키마·Target 규격).
  *
  * 캔버스:
  *   Start → 00 → 01 → 02 → 03_Test
@@ -10,7 +10,7 @@
  *     Test finish  → End (+ Status Signal PostEvent)
  *
  * [Main Functions]
- * 1. FACTORY_CFG — GRAND_TOTAL·BIZ_DATE·폴링·WF 이름
+ * 1. FACTORY_CFG — WORKER/BATCH/CUSTOM_ATTR·GRAND_TOTAL·BIZ_DATE·폴링
  * 2. BULK_CFG 정합·MEMBER_TABLE·pending 시작 건수
  * 3. instance.vars 전파·sessionRunId
  *
@@ -22,22 +22,33 @@ loadLibrary("wootar:testWooBulkApiWorker.js", false);
 
 var FACTORY_CFG = {
 
-  // 0 = GRAND_TOTAL 과 동일(단일 라운드)
-  ROUND_LIMIT   : 0,
-
-  // 0 = 해당 BIZ_DATE pending 전량(누적 sent 상한 없음). Default.
-  // 양수 = 누적 sent cap — 부분 전송·부하 테스트 시 수기 입력 (예: 10000)
-  GRAND_TOTAL   : 0,
-
-  // 적재 기준일 YYYYMMDD. "" → BULK_CFG.BIZ_DATE → 없으면 오늘.
-  // "20260824" → hardcode — 비오늘·누락분(apiYn=N) 재전송
+  /* ---- 라운드 스코프 ---- */
+  ROUND_LIMIT   : 2000000,
+  GRAND_TOTAL   : 10000000,
+  // 적재 기준일 YYYYMMDD. "" → 오늘. "20260824" → hardcode 재전송
   BIZ_DATE      : "",
 
+  /* ---- 워커 배분 ---- */
+  WORKER_COUNT  : 3,
+  WORKER_MAX    : 15,
+  BATCH_SIZE    : 50000,
+
+  /* ---- 전송 속성 ---- */
+  CUSTOM_ATTR   : "@planName",
+
+  /* ---- 레이트 예산 ---- */
+  ACCOUNT_CPM     : 50,
+  STATUS_CPM      : 5,
+  SAFETY_RATIO    : 0.9,
+  STAGGER_SLOT_MS : 1200,
+
+  /* ---- WF 배선 ---- */
   WORKER_WF     : "TBAW{n}",
   WORKER_NAME   : "TBAW{n}",
   WORKER_SIG    : "sigWorker",
-
   OPT_PREFIX    : "WORKER_DONE_",
+
+  /* ---- 폴링 런타임 ---- */
   STRICT_RUNID  : true,
   ABORT_ON_ERR  : false,
   MAX_READY     : 5,
@@ -56,13 +67,18 @@ function sqlLitCfg(s) {
   return String(s === undefined || s === null ? "" : s).replace(/'/g, "''");
 }
 
+function cfgInt(v, d) {
+  var n = parseInt(v, 10);
+  return (!isNaN(n) && n > 0) ? n : d;
+}
+
 var lineMax = parseInt(BULK_CFG.LINE_NO_MAX, 10);
 if (!(lineMax >= 1)) {
   throw new Error("[Config] BULK_CFG.LINE_NO_MAX 없음");
 }
 
-var wCount = parseInt(BULK_CFG.WORKER_COUNT, 10) || 3;
-var wMax   = parseInt(BULK_CFG.WORKER_MAX, 10) || 15;
+var wCount = cfgInt(FACTORY_CFG.WORKER_COUNT, 3);
+var wMax   = cfgInt(FACTORY_CFG.WORKER_MAX, 15);
 if (wCount < 1) wCount = 1;
 if (wCount > wMax) {
   logWarning("[Config] WORKER_COUNT " + wCount + " > WORKER_MAX " + wMax);
@@ -74,13 +90,19 @@ if (schema.indexOf(":") < 0) {
   throw new Error("[Config] MEMBER_SCHEMA 형식 오류: '" + schema + "'");
 }
 
-var batch = parseInt(BULK_CFG.BATCH_SIZE, 10) || 5000;
-if (batch < 1) batch = 1;
+var batch = cfgInt(FACTORY_CFG.BATCH_SIZE, 50000);
 if (batch > parseInt(BULK_CFG.MAX_BATCH_ROWS, 10)) {
   throw new Error("[Config] BATCH_SIZE " + batch + " > Target 상한");
 }
 
-var throttleMs = BulkApiWorker.calcThrottleMs(wCount);
+var customAttr = String(FACTORY_CFG.CUSTOM_ATTR || "");
+
+var throttleMs = BulkApiWorker.calcThrottleMs(wCount, {
+  ACCOUNT_CPM     : FACTORY_CFG.ACCOUNT_CPM,
+  STATUS_CPM      : FACTORY_CFG.STATUS_CPM,
+  SAFETY_RATIO    : FACTORY_CFG.SAFETY_RATIO,
+  STAGGER_SLOT_MS : FACTORY_CFG.STAGGER_SLOT_MS
+});
 
 var bizDateOverride = String(FACTORY_CFG.BIZ_DATE || "").replace(/^\s+|\s+$/g, "");
 var bizDate = BulkApiWorker.resolveBizDate(bizDateOverride || undefined);
@@ -96,17 +118,22 @@ if (!(roundLimit >= 1)) {
   roundLimit = (grandTotal > 0) ? grandTotal : 50000000;
 }
 
+var ROUND_CAP = wCount * batch * 40;
+if (roundLimit <= 0 || roundLimit > ROUND_CAP) {
+  logWarning("[Config] ROUND_LIMIT " + roundLimit + " → " + ROUND_CAP + " clamp"
+    + " (worker " + wCount + " x batch " + batch + " x 40)");
+  roundLimit = ROUND_CAP;
+}
+
 var pendingXPath = "@apiYn = 'N' AND @lineNo >= 1 AND @ingestYmd = '" + bizDate + "'";
 var pendingSql   = "s.sapiyn = 'N' AND s.singestymd = '" + sqlLitCfg(bizDate) + "' AND s.ilineno >= 1";
 
-// (변경) 고도화. MEMBER_TABLE 미설정 시 PostgreSQL 물리명(소문자) 폴백
 var memTable = String(BULK_CFG.MEMBER_TABLE || "").replace(/^\s+|\s+$/g, "");
 if (!memTable) {
   memTable = "wootartestwootargetsample";
   logWarning("[Config] BULK_CFG.MEMBER_TABLE 비어 있음 — 폴백 " + memTable);
 }
 
-// (변경) 고도화. 실행 시작 pending 건수(부분 인덱스 스코프). 실패해도 Factory 진행
 var pendingStartCnt = -1;
 if (memTable) {
   try {
@@ -133,14 +160,21 @@ instance.vars.pendingStartCnt = pendingStartCnt;
 instance.vars.PENDING_COND     = pendingXPath;
 instance.vars.PENDING_COND_SQL = pendingSql;
 instance.vars.WORKER_COUNT    = wCount;
+instance.vars.WORKER_MAX      = wMax;
 instance.vars.ROUND_LIMIT     = roundLimit;
 instance.vars.GRAND_TOTAL     = grandTotal;
+instance.vars.BATCH_SIZE      = batch;
+instance.vars.CUSTOM_ATTR     = customAttr;
+instance.vars.ACCOUNT_CPM     = cfgInt(FACTORY_CFG.ACCOUNT_CPM, 50);
+instance.vars.STATUS_CPM      = cfgInt(FACTORY_CFG.STATUS_CPM, 5);
+instance.vars.SAFETY_RATIO    = String(FACTORY_CFG.SAFETY_RATIO || 0.9);
+instance.vars.STAGGER_SLOT_MS = cfgInt(FACTORY_CFG.STAGGER_SLOT_MS, 1200);
 instance.vars.WORKER_WF_TPL   = String(FACTORY_CFG.WORKER_WF);
 instance.vars.WORKER_NAME_TPL = String(FACTORY_CFG.WORKER_NAME);
 instance.vars.WORKER_SIG      = String(FACTORY_CFG.WORKER_SIG || "sigWorker");
 instance.vars.OPT_PREFIX      = String(FACTORY_CFG.OPT_PREFIX || "WORKER_DONE_");
 instance.vars.STRICT_RUNID    = FACTORY_CFG.STRICT_RUNID ? "true" : "false";
-instance.vars.ABORT_ON_WORKER_ERROR = FACTORY_CFG.ABORT_ON_ERR ? "true" : "false";
+instance.vars.ABORT_ON_WORKER_ERROR = String(FACTORY_CFG.ABORT_ON_ERR === true);
 instance.vars.MAX_READY_POLL  = parseInt(FACTORY_CFG.MAX_READY, 10) || 5;
 instance.vars.MAX_RUN_POLL    = parseInt(FACTORY_CFG.MAX_RUN, 10) || 360;
 instance.vars.MAX_ROUND       = parseInt(FACTORY_CFG.MAX_ROUND, 10) || 200;
@@ -166,5 +200,6 @@ logInfo("[Config] sessionRunId=" + sessionRunId
   + (grandTotal === 0 ? " (무제한)" : " (cap)")
   + " / pollWait " + instance.vars.POLL_WAIT_SEC + "s"
   + " / 스로틀 ~" + throttleMs + "ms"
+  + " / custom=" + customAttr
   + " / table " + memTable
   + " / schema " + schema);

@@ -32,6 +32,10 @@ var STATUS_CFG = {
   // 한 청크에서 GET 이 연속 실패하면 나머지 행은 다음 사이클로
   MAX_CONSEC_FAIL    : 5,
 
+  // Status GET 레이트 예산 (Target status API 5 calls/min 기준)
+  STATUS_CPM         : 5,
+  SAFETY_RATIO       : 0.9,
+
   GET_RETRY          : 3
 };
 
@@ -42,7 +46,7 @@ function BulkStatusChecker() {
   }
   this.authToken = String(BULK_CFG.AUTH_TOKEN || "").replace(/^\s+|\s+$/g, "");
   this.lastCallMs = 0;
-  var cpm = BULK_CFG.STATUS_CPM * BULK_CFG.SAFETY_RATIO;   // Status 전용 CPM 예산
+  var cpm = (parseFloat(STATUS_CFG.STATUS_CPM) || 5) * (parseFloat(STATUS_CFG.SAFETY_RATIO) || 0.9);
   if (!(cpm > 0)) cpm = 1;
   this.MIN_INTERVAL_MS = Math.ceil(60000 / cpm);
   this.schema  = String(BULK_CFG.MASTER_SCHEMA);

@@ -16,7 +16,6 @@
 
 logInfo(">>> jsWorker 진입");
 
-// (변경) FIX-34. vars 는 XML 아닌 JS 객체 → toXMLString 없음. 키 나열로 대체
 function dumpVars(label, o) {
   var a = [];
   for (var k in o) { a.push(k + "=" + String(o[k])); }

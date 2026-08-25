@@ -29,7 +29,6 @@ if (String(instance.vars.nextAction) === "finish") {
   var MAX_READY   = NUM(instance.vars.MAX_READY_POLL, 5);
   var MAX_RUN     = NUM(instance.vars.MAX_RUN_POLL, 360);
   var GRAND_TOTAL = NUM(instance.vars.GRAND_TOTAL, 0);
-  // (변경) 하드코딩 → Config. MAX_READY/MAX_RUN 과 동일 선언 위치
   var MAX_ROUND   = NUM(instance.vars.MAX_ROUND, 200);
   var MAX_STALL   = NUM(instance.vars.MAX_STALL, 3);
 
@@ -155,16 +154,13 @@ if (String(instance.vars.nextAction) === "finish") {
       logInfo("[Polling] 미전송 잔존 → next");
     }
 
-    // (변경) 라운드 무진행 감지. MAX_ROUND 소진 전에 조기 탈출
     var prevProcessed = NUM(instance.vars.prevProcessed, -1);
     if (String(instance.vars.nextAction) === "next") {
       if (processed <= prevProcessed) {
         var stall = NUM(instance.vars.stallCount) + 1;
         instance.vars.stallCount = stall;
-        // (변경) stall >= 3 하드코딩 → MAX_STALL
         if (stall >= MAX_STALL) {
           instance.vars.nextAction = "finish";
-          // (변경) FIX-44. 무진행 원인 명시 — WF 미시작(skip) vs 실제 정체 구분
           logError("[Polling] " + MAX_STALL + "라운드 연속 처리량 0 → 강제 종료"
             + " processed=" + processed
             + " / 워커상태=" + summary.join(", ")
@@ -176,7 +172,6 @@ if (String(instance.vars.nextAction) === "finish") {
       instance.vars.prevProcessed = processed;
     }
 
-    // (변경) 고도화. finish 시 운영 요약 배너 — Status WF·로그 분석용
     if (String(instance.vars.nextAction) === "finish") {
       var startCnt = NUM(instance.vars.pendingStartCnt, -1);
       logInfo("===== [Factory] 종료 =====");
