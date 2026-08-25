@@ -2,6 +2,8 @@
 
 ## Log Index
 
+60. 2026-08-25 GitHub Develop 리모트 동기화
+59. 2026-08-25 스모크·Factory ingestYmd/BIZ_DATE/GRAND_TOTAL 정합
 58. 2026-08-25 GitHub Develop 리모트 동기화
 57. 2026-08-24 라이브러리 ingestYmd + BIZ_DATE 기준일 전환
 56. 2026-08-24 Sample 큐 키 ingestYm → ingestYmd(YYYYMMDD) 스키마·마이그레이션 SQL
@@ -62,6 +64,23 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+60. 2026-08-25 GitHub Develop 리모트 동기화
+Purpose: 스모크·Factory ingestYmd/BIZ_DATE/GRAND_TOTAL 정합을 origin/main에 올린다.
+Changes:
+
+- test 01~07 ingestYmd·bizDate PostEvent, Factory pending BIZ_DATE 스코프
+Changed files: docs/log/log.md, new_ver/test/*.js, new_ver/workflow/factory/*.js, new_ver/workflow/worker/worker.js
+
+59. 2026-08-25 스모크·Factory ingestYmd/BIZ_DATE/GRAND_TOTAL 정합
+Purpose: Step 3·4 — test/workflow를 일 단위 ingestYmd·BIZ_DATE·GRAND_TOTAL 계약에 맞춘다.
+Changes:
+
+- test 02~07: ingestYmd/smkRealYmd/singestymd, PostEvent bizDate+ingestYmd
+- Factory 01: head 8자리 검증, splitBounds PENDING_COND_SQL 단일, PostEvent bizDate
+- Factory 02: pending 잔량 조회에 PENDING_COND(BIZ_DATE 스코프)
+- worker.js: ingestYmd·bizDate 로그
+Changed files: new_ver/test/02_SmokeLocal.js, new_ver/test/03_SmokeFire.js, new_ver/test/05_SmokeApiTest.js, new_ver/test/06_SmokeVerify.js, new_ver/test/07_SmokeSignalWorker.js, new_ver/workflow/factory/01_WorkerDistributor.js, new_ver/workflow/factory/02_Polling.js, new_ver/workflow/worker/worker.js, docs/log/log.md
 
 58. 2026-08-25 GitHub Develop 리모트 동기화
 Purpose: ingestYmd 큐 키 전환·BIZ_DATE·스모크/Master 수정을 origin/main에 올린다.

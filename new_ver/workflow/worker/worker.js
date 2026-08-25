@@ -2,6 +2,7 @@
  * workflow.worker.worker.js (워커 진입점)
  * ============================================================================
  * TBAW1 ~ TBAW15 동일 코드. Factory 01 의 PostEvent vars 로 라이브러리를 실행한다.
+ * PostEvent: workerName, ingestYmd, bizDate, lineStart, lineEnd, runId, optKey, workerCount
  * 상태 Option 만 쓴다. 토큰·스키마·CUSTOM_ATTR 은 BULK_CFG.
  *
  * 이 WF 는 항상 시작됨(state=11). End 만 두고 complete 로 끄지 말 것.
@@ -38,7 +39,8 @@ function report(status, sent, failed) {
 try {
   report("running");
   logInfo("[" + workerName + "] Signal 수신 / runId=" + runId
-    + " / " + P.ingestYm + " line " + P.lineStart + " ~ " + P.lineEnd
+    + " / bizDate=" + (P.bizDate || P.ingestYmd || "")
+    + " / " + (P.ingestYmd || "") + " line " + P.lineStart + " ~ " + P.lineEnd
     + " / workerCount=" + P.workerCount);
 
   if (typeof BulkApiWorker !== "function") {

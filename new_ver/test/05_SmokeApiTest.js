@@ -19,7 +19,7 @@ function ok(n, c, d) {
 
 var CLIENT = String(instance.vars.smkClient || "");
 var RUN_ID = String(instance.vars.smkRunId || "");
-var ym     = String(instance.vars.smkRealYm || "");
+var ymd     = String(instance.vars.smkRealYmd || "");
 var lineS  = parseInt(instance.vars.smkRealLineS, 10) || 0;
 var lineE  = parseInt(instance.vars.smkRealLineE, 10) || 0;
 var SCHEMA = String(instance.vars.smkSchema);
@@ -94,8 +94,8 @@ if (instance.vars.smkTApi !== "1") {
          "status=" + st + " recordCount=" + recCnt);
     }
 
-    // idx_pending_queue(apiYn, ingestYm, lineNo) 와 조건 순서 일치
-    var scond = "@apiYn='Y' AND @ingestYm='" + ym + "'"
+    // idx_pending_queue(apiYn, ingestYmd, lineNo) 와 조건 순서 일치
+    var scond = "@apiYn='Y' AND @ingestYmd='" + ymd + "'"
       + " AND @lineNo >= " + lineS + " AND @lineNo <= " + lineE
       + " AND [master/@batchName] LIKE 'SMOKE-" + RUN_ID + "-%'"
       + " AND [master/@batchName] NOT LIKE '%-M1'";

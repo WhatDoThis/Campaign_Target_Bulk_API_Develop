@@ -1,7 +1,7 @@
 /* ============================================================================
  * TBAWSmokeSignal / jsWorker (워커 진입점)
  * 03_Fire PostEvent 를 받아 BulkApiWorker.run() 을 실행한다.
- * Factory worker.js 와 동일 vars 계약(workerName, ingestYm, lineStart, lineEnd, runId, optKey).
+ * Factory worker.js 와 동일 vars 계약(workerName, ingestYmd, bizDate, lineStart, lineEnd, runId, optKey).
  *
  * [주의] 이 WF는 항상 '시작됨'. 뒤에 End만 두고 완료로 끄지 말 것.
  *
@@ -47,7 +47,7 @@ try {
 
   var w = new BulkApiWorker(P);
   logInfo("  워커 생성 OK / DRY_RUN=" + w.DRY_RUN
-        + " / 구간 " + w.ingestYm + " line " + w.lineStart + "~" + w.lineEnd
+        + " / 구간 " + w.ingestYmd + " line " + w.lineStart + "~" + w.lineEnd
         + " / batch " + w.BATCH_SIZE
         + " / custom=" + (w.customAttrs && w.customAttrs.length ? w.customAttrs.join(",") : "(none)")
         + " / url " + w.bulkApiUrl);

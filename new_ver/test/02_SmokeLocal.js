@@ -1,11 +1,11 @@
 /* ============================================================================
  * TBAWSmoke / 02_Local (로컬 스키마·분할·라이브러리 dryRun)
- * 스키마 I/O, 큐 키(ingestYm+lineNo) offset 분할, 페이로드 규격, apiYn 왕복, dryRun.
+ * 스키마 I/O, 큐 키(ingestYmd+lineNo) offset 분할, 페이로드 규격, apiYn 왕복, dryRun.
  *
  * [Main Functions]
  * 1. Member/Master 도달성 + 큐 컬럼 + runId 물리 컬럼
  * 2. Master/Sample master FK 링크 검증
- * 3. 같은 ingestYm 안 lineNo offset 분할 검증
+ * 3. 같은 ingestYmd(BIZ_DATE) 안 lineNo offset 분할 검증
  * 4. BulkApiWorker dryRun (T_LIB_DRY)
  *
  * [Dependencies]
@@ -44,20 +44,20 @@ function fetchPendingRow(offset) {
               startLine={String(offset)} lineCount="1">
       <select>
         <node expr="@membershipUid"/>
-        <node expr="@ingestYm"/>
+        <node expr="@ingestYmd"/>
         <node expr="@lineNo"/>
       </select>
       <where><condition expr={PENDING}/></where>
       <orderBy>
-        <node expr="@ingestYm" sortDesc="false"/>
+        <node expr="@ingestYmd" sortDesc="false"/>
         <node expr="@lineNo" sortDesc="false"/>
       </orderBy>
     </queryDef>
   ).ExecuteQuery();
-  var row = { uid: "", ym: "", line: 0 };
+  var row = { uid: "", ymd: "", line: 0 };
   for each (var x in q[ELEMENT]) {
     row.uid  = String(x.@membershipUid);
-    row.ym   = String(x.@ingestYm);
+    row.ymd  = String(x.@ingestYmd);
     row.line = parseInt(String(x.@lineNo), 10) || 0;
   }
   return row;
@@ -80,15 +80,15 @@ try {
   var qHead = fetchPendingRow(0);
   ok("PendingCond 유효", qHead.uid !== "",
     qHead.uid ? ("uid=" + qHead.uid) : "0건 ← 백필 SQL 후 재실행");
-  ok("큐 컬럼 조회(ingestYm/lineNo)", qHead.ym.length === 6 && qHead.line >= 1,
-    "ym=" + qHead.ym + " line=" + qHead.line + " uid=" + qHead.uid
+  ok("큐 컬럼 조회(ingestYmd/lineNo)", qHead.ymd.length === 8 && qHead.line >= 1,
+    "ymd=" + qHead.ymd + " line=" + qHead.line + " uid=" + qHead.uid
       + (qHead.line >= 1 ? "" : " ← schema/backfillSampleQueue.sql"));
-  instance.vars.smkMinYm   = qHead.ym;
+  instance.vars.smkMinYmd  = qHead.ymd;
   instance.vars.smkMinLine = qHead.line;
   instance.vars.smkMinUid  = qHead.uid;
 } catch (e) {
   ok("PendingCond 유효", false, e.toString());
-  ok("큐 컬럼 조회(ingestYm/lineNo)", false,
+  ok("큐 컬럼 조회(ingestYmd/lineNo)", false,
     e.toString() + " ← Sample 스키마 게시 + 백필");
 }
 
@@ -179,28 +179,28 @@ else {
     }
 
     if (masterId > 0) {
-      var linkYm = String(instance.vars.smkMinYm || "");
+      var linkYmd = String(instance.vars.smkMinYmd || "");
       var linkLine = parseInt(instance.vars.smkMinLine, 10) || 0;
-      if (!linkYm || linkLine < 1) {
+      if (!linkYmd || linkLine < 1) {
         var hq = fetchPendingRow(0);
-        linkYm = hq.ym;
+        linkYmd = hq.ymd;
         linkLine = hq.line;
       }
-      if (linkYm && linkLine >= 1) {
+      if (linkYmd && linkLine >= 1) {
       var prevMaster = 0;
       try {
         var prevQ = xtk.queryDef.create(
           <queryDef schema={SCHEMA} operation="getIfExists">
             <select><node expr="[@master-id]" alias="@masterFk"/></select>
             <where>
-              <condition expr={"@ingestYm='" + linkYm + "' AND @lineNo=" + linkLine}/>
+              <condition expr={"@ingestYmd='" + linkYmd + "' AND @lineNo=" + linkLine}/>
             </where>
           </queryDef>).ExecuteQuery();
         prevMaster = parseInt(String(prevQ.@masterFk || ""), 10) || 0;
       } catch (ePrev) {}
 
       sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + masterId
-        + " WHERE singestym='" + linkYm + "' AND ilineno=" + linkLine);
+        + " WHERE singestymd='" + linkYmd + "' AND ilineno=" + linkLine);
 
       var s = xtk.queryDef.create(
         <queryDef schema={SCHEMA} operation="getIfExists">
@@ -211,7 +211,7 @@ else {
             <node expr="[master/@batchName]" alias="@masterBatchName"/>
           </select>
           <where>
-            <condition expr={"@ingestYm='" + linkYm + "' AND @lineNo=" + linkLine}/>
+            <condition expr={"@ingestYmd='" + linkYmd + "' AND @lineNo=" + linkLine}/>
           </where>
         </queryDef>).ExecuteQuery();
       ok("Sample master FK 갱신", String(s.@membershipUid) !== "");
@@ -227,7 +227,7 @@ else {
           + " expect=" + masterId + " batchName=" + linkedName);
 
       sqlExec("UPDATE " + MEM_TBL + " SET imasterid=" + prevMaster
-        + " WHERE singestym='" + linkYm + "' AND ilineno=" + linkLine);
+        + " WHERE singestymd='" + linkYmd + "' AND ilineno=" + linkLine);
       } else {
         skip("Sample master FK", "pending 큐 키 없음");
       }
@@ -240,9 +240,9 @@ if (instance.vars.smkTPart !== "1") { skip("T4", "스위치 OFF"); }
 else {
   try {
     var head = fetchPendingRow(0);
-    ok("pending 큐 헤드", head.ym.length === 6 && head.line >= 1,
-      head.ym + " line=" + head.line + " uid=" + head.uid);
-    instance.vars.smkMinYm   = head.ym;
+    ok("pending 큐 헤드", head.ymd.length === 8 && head.line >= 1,
+      head.ymd + " line=" + head.line + " uid=" + head.uid);
+    instance.vars.smkMinYmd  = head.ymd;
     instance.vars.smkMinLine = head.line;
     instance.vars.smkMinUid  = head.uid;
 
@@ -261,7 +261,7 @@ else {
       }
       marks.push(remaining - 1);
 
-      var prevEndLine = 0, ovl = 0, ymMix = 0, w;
+      var prevEndLine = 0, ovl = 0, ymdMix = 0, w;
       for (w = 0; w < marks.length - 1; w++) {
         var sRow = fetchPendingRow(marks[w]);
         var endOff = (w === marks.length - 2) ? marks[w + 1] : (marks[w + 1] - 1);
@@ -270,13 +270,13 @@ else {
           logWarning("  worker" + (w + 1) + " : offset 공백 start=" + marks[w] + " end=" + endOff);
           continue;
         }
-        if (sRow.ym !== head.ym || eRow.ym !== head.ym) ymMix++;
+        if (sRow.ymd !== head.ymd || eRow.ymd !== head.ymd) ymdMix++;
         if (prevEndLine > 0 && sRow.line <= prevEndLine) ovl++;
         prevEndLine = eRow.line;
-        logInfo("  worker" + (w + 1) + " : " + sRow.ym + " line " + sRow.line + " ~ " + eRow.line
+        logInfo("  worker" + (w + 1) + " : " + sRow.ymd + " line " + sRow.line + " ~ " + eRow.line
           + " (" + sRow.uid + " ~ " + eRow.uid + ")");
       }
-      ok("구간 월 단일", ymMix === 0, "다른 월 경계=" + ymMix);
+      ok("구간 적재일 단일", ymdMix === 0, "다른 일자 경계=" + ymdMix);
       ok("구간 중복 없음", ovl === 0, "overlap=" + ovl);
       ok("마지막 워커 end line 존재", prevEndLine >= 1, "endLine=" + prevEndLine);
     }
@@ -309,7 +309,7 @@ else {
         <select><node expr="@membershipUid"/></select>
         <where><condition expr={PENDING}/></where>
         <orderBy>
-          <node expr="@ingestYm" sortDesc="false"/>
+          <node expr="@ingestYmd" sortDesc="false"/>
           <node expr="@lineNo" sortDesc="false"/>
         </orderBy>
       </queryDef>).ExecuteQuery();
@@ -334,21 +334,22 @@ if (instance.vars.smkTLibDry !== "1") { skip("T6b", "스위치 OFF"); }
 else if (typeof BulkApiWorker !== "function") { ok("library dryRun", false, "BulkApiWorker 없음"); }
 else {
   try {
-    var ym0 = String(instance.vars.smkMinYm || "");
+    var ymd0 = String(instance.vars.smkMinYmd || instance.vars.smkBizDate || "");
     var ln0 = parseInt(instance.vars.smkMinLine, 10) || 0;
-    if (!ym0 || ln0 < 1) {
+    if (!ymd0 || ln0 < 1) {
       var h2 = fetchPendingRow(0);
-      ym0 = h2.ym;
+      ymd0 = h2.ymd;
       ln0 = h2.line;
     }
-    if (!ym0 || ln0 < 1) { skip("T6b", "pending 큐 키 없음 — 백필 필요"); }
+    if (!ymd0 || ln0 < 1) { skip("T6b", "pending 큐 키 없음 — 백필 필요"); }
     else {
       var lim = parseInt(instance.vars.smkLimit, 10) || 300;
       var tail = fetchPendingRow(lim - 1);
-      var ln1 = (tail.line >= 1 && tail.ym === ym0) ? tail.line : (ln0 + lim - 1);
+      var ln1 = (tail.line >= 1 && tail.ymd === ymd0) ? tail.line : (ln0 + lim - 1);
       var wdry = new BulkApiWorker({
         workerName:  "SMOKE-LOCAL",
-        ingestYm:    ym0,
+        ingestYmd:   ymd0,
+        bizDate:     String(instance.vars.smkBizDate || ymd0),
         lineStart:   String(ln0),
         lineEnd:     String(ln1),
         runId:       String(instance.vars.smkRunId),

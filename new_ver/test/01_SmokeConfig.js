@@ -6,7 +6,7 @@
  *
  * [Main Functions]
  * 1. loadLibrary 후 BULK_CFG / BulkApiWorker 존재 확인
- * 2. 스모크 스위치·캔버스 상수를 instance.vars 로 전파 (BULK_CFG 값은 재선언하지 않음)
+ * 2. BIZ_DATE·pending·스모크 스위치를 instance.vars 로 전파
  *
  * [Dependencies]
  * wootar:testWooBulkApiWorker.js, formatDate, setOption(상태 초기화만)
@@ -16,7 +16,7 @@ loadLibrary("wootar:testWooBulkApiWorker.js", false);
 
 /* --- [S1] 테스트 스위치 ------------------------------------------------- */
 var T_SCHEMA_IO = true;    // Master/Sample 쓰기·링크·삭제
-var T_PARTITION = true;    // 워커 큐 키(ingestYm+lineNo) offset 분할 검증
+var T_PARTITION = true;    // 워커 큐 키(ingestYmd+lineNo) offset 분할 검증
 var T_CURSOR    = true;    // sqlExec apiYn 왕복 (3건, 원복)
 var T_LIB_DRY   = true;    // 같은 캔버스에서 라이브러리 dryRun (미전송)
 var T_SIGNAL    = true;    // PostEvent → TBAWSmokeSignal. 기본 실전송(소수)
@@ -29,7 +29,13 @@ var SIGNAL_WF       = "TBAWSmokeSignal";
 var SIG_ACTIVITY    = "sigWorker";
 var SMOKE_LIMIT     = 300;   // T4 분할·T6b 구간 폭. 운영 배치 크기 아님
 var SMOKE_REAL_ROWS = 2;     // 03→07 실전송 행수. 샌드박스 소수만
-var MAX_POLL        = 20;    // Option 핸드셰이크 횟수. BULK_CFG.POLL_MAX(batchStatus GET) 와 다름
+
+/* --- [S3] 적재 기준일 BIZ_DATE (Factory 00_Config 와 동일 규칙) ---------------
+ * 포맷: YYYYMMDD 8자리 (예: 20260824). 하이픈·YYYYMM(6자) 금지.
+ * ""  → BULK_CFG.BIZ_DATE → 없으면 실행 시점 오늘 (formatDate %4Y%2M%2D)
+ * "20260824" → hardcode — 비오늘 데이터 재전송·누락분(apiYn=N) 테스트
+ * ------------------------------------------------------------------------- */
+var SMOKE_BIZ_DATE  = "";
 
 var PASS = 0, FAIL = 0, FAILS = [];
 function ok(n, c, d) {
@@ -43,6 +49,9 @@ logInfo("=== T1 Config (BULK_CFG) ===");
 
 ok("BULK_CFG 로드", typeof BULK_CFG === "object" && BULK_CFG !== null, "");
 ok("BulkApiWorker 정의", typeof BulkApiWorker === "function", "");
+
+var bizDate = BulkApiWorker.resolveBizDate(SMOKE_BIZ_DATE);
+ok("BIZ_DATE YYYYMMDD", /^[0-9]{8}$/.test(bizDate), bizDate);
 
 var MEMBER_SCHEMA = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.MEMBER_SCHEMA || "") : "";
 var CLIENT_CODE   = (typeof BULK_CFG !== "undefined") ? String(BULK_CFG.CLIENT_CODE || "") : "";
@@ -59,6 +68,8 @@ ok("WORKER_COUNT 1~WORKER_MAX", W_COUNT >= 1, "=" + W_COUNT);
 ok("AUTH_TOKEN 비어 있음 또는 설정됨", true,
   (typeof BULK_CFG !== "undefined" && BULK_CFG.AUTH_TOKEN) ? "Profile API 토큰 on" : "헤더 생략(Require Authentication OFF)");
 
+var smkPending = "@apiYn = 'N' AND @lineNo >= 1 AND @ingestYmd = '" + bizDate + "'";
+
 instance.vars.smkRunId     = runId;
 instance.vars.smkTag       = "SMOKE-" + runId;
 instance.vars.smkSigWf     = SIGNAL_WF;
@@ -68,10 +79,11 @@ instance.vars.smkElement   = (MEMBER_SCHEMA.indexOf(":") > 0) ? MEMBER_SCHEMA.sp
 instance.vars.smkClient    = CLIENT_CODE;
 instance.vars.smkUrl       = "https://" + CLIENT_CODE + ".tt.omtrdc.net/m2/"
                            + CLIENT_CODE + "/v2/profile/batchUpdate";
-instance.vars.smkPending   = "@apiYn = 'N' AND @lineNo >= 1 AND @ingestYm != ''";
+instance.vars.smkBizDate   = bizDate;
+instance.vars.smkPending   = smkPending;
 instance.vars.smkLimit     = SMOKE_LIMIT;
 instance.vars.smkRealRows  = SMOKE_REAL_ROWS;
-instance.vars.smkMaxPoll   = MAX_POLL;
+instance.vars.smkMaxPoll   = 20;
 instance.vars.smkPollCnt   = 0;
 instance.vars.smkOptKey    = "WORKER_DONE_SMOKE";
 
@@ -92,5 +104,6 @@ try { setOption(instance.vars.smkOptKey, "", "smoke worker status"); } catch (e)
 logInfo("  URL = " + instance.vars.smkUrl);
 logInfo("  BATCH_SIZE=" + BATCH_SIZE + " WORKER_COUNT=" + W_COUNT
   + " customAttr=" + ((typeof BULK_CFG !== "undefined" && BULK_CFG.CUSTOM_ATTR) ? BULK_CFG.CUSTOM_ATTR : "(none)"));
+logInfo("  BIZ_DATE=" + bizDate + " (SMOKE_BIZ_DATE=" + (SMOKE_BIZ_DATE || "(auto)") + ")");
+logInfo("  pending = apiYn=N AND lineNo>=1 AND ingestYmd=" + bizDate);
 logInfo("  실전송 행수 = " + SMOKE_REAL_ROWS + " (03 Fire → 07, dryRun=false)");
-logInfo("  pending 조건 = apiYn=N AND lineNo>=1 AND ingestYm 있음");

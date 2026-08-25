@@ -21,6 +21,7 @@ if (String(instance.vars.nextAction) === "finish") {
   var W_COUNT     = NUM(instance.vars.WORKER_COUNT, 3);
   var SCHEMA      = String(instance.vars.MEMBER_SCHEMA);
   var ELEMENT     = String(instance.vars.MEMBER_ELEMENT);
+  var PENDING     = String(instance.vars.PENDING_COND || "@apiYn = 'N' AND @lineNo >= 1");
   var OPT_PREFIX  = String(instance.vars.OPT_PREFIX);
   var RUN_ID      = String(instance.vars.runId || "");
   var STRICT      = (String(instance.vars.STRICT_RUNID) === "true");
@@ -111,7 +112,7 @@ if (String(instance.vars.nextAction) === "finish") {
       var pq = xtk.queryDef.create(
         <queryDef schema={SCHEMA} operation="select" lineCount="1">
           <select><node expr="@lineNo"/></select>
-          <where><condition expr="@apiYn = 'N' AND @lineNo >= 1"/></where>
+          <where><condition expr={PENDING}/></where>
         </queryDef>
       ).ExecuteQuery();
       countStatus = 0;

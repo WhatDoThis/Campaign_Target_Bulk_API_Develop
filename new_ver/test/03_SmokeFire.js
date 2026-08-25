@@ -83,48 +83,50 @@ if (instance.vars.smkTSignal !== "1") {
         <queryDef schema={SCHEMA} operation="select" lineCount={String(realN)}>
           <select>
             <node expr="@membershipUid"/>
-            <node expr="@ingestYm"/>
+            <node expr="@ingestYmd"/>
             <node expr="@lineNo"/>
           </select>
           <where><condition expr={PENDING}/></where>
           <orderBy>
-            <node expr="@ingestYm" sortDesc="false"/>
+            <node expr="@ingestYmd" sortDesc="false"/>
             <node expr="@lineNo" sortDesc="false"/>
           </orderBy>
         </queryDef>
       ).ExecuteQuery();
 
       var uids = [];
-      var ym = "";
+      var ymd = "";
       var lineStart = 0;
       var lineEnd = 0;
       for each (var row in qr[ELEMENT]) {
-        var rowYm = String(row.@ingestYm);
+        var rowYmd = String(row.@ingestYmd);
         var rowLn = parseInt(String(row.@lineNo), 10) || 0;
-        if (!ym) {
-          ym = rowYm;
+        if (!ymd) {
+          ymd = rowYmd;
           lineStart = rowLn;
         }
-        if (rowYm !== ym) break;
+        if (rowYmd !== ymd) break;
         uids.push(String(row.@membershipUid));
         lineEnd = rowLn;
       }
-      ok("실전송 대상 pending", uids.length > 0 && ym.length === 6 && lineStart >= 1,
-        "n=" + uids.length + " / 요청=" + realN + " / " + ym + " line " + lineStart + " ~ " + lineEnd);
+      ok("실전송 대상 pending", uids.length > 0 && ymd.length === 8 && lineStart >= 1,
+        "n=" + uids.length + " / 요청=" + realN + " / " + ymd + " line " + lineStart + " ~ " + lineEnd);
 
       if (uids.length === 0 || lineStart < 1) {
         mark("skip");
       } else {
-        instance.vars.smkRealYm    = ym;
+        instance.vars.smkRealYmd   = ymd;
         instance.vars.smkRealLineS = lineStart;
         instance.vars.smkRealLineE = lineEnd;
         instance.vars.smkRealStart = uids[0];
         instance.vars.smkRealEnd   = uids[uids.length - 1];
         instance.vars.smkRealCount = uids.length;
 
+        var bizDate = String(instance.vars.smkBizDate || ymd);
         var params = <variables
             workerName="SMOKE"
-            ingestYm={ym}
+            ingestYmd={ymd}
+            bizDate={bizDate}
             lineStart={String(lineStart)}
             lineEnd={String(lineEnd)}
             runId={RUN_ID}
@@ -134,7 +136,7 @@ if (instance.vars.smkTSignal !== "1") {
             workerCount="1"
             authToken=""/>;
 
-        logInfo("  실전송 발사: " + ym + " line " + lineStart + " ~ " + lineEnd
+        logInfo("  실전송 발사: " + ymd + " line " + lineStart + " ~ " + lineEnd
           + " / uid " + uids[0] + " ~ " + uids[uids.length - 1]
           + " (" + uids.length + "건)");
         logInfo("  발사 파라미터: " + params.toXMLString());
@@ -142,7 +144,7 @@ if (instance.vars.smkTSignal !== "1") {
         xtk.workflow.PostEvent(SIG_WF, SIG_ACT, "", params, false);
 
         ok("PostEvent 실전송 발사", true,
-           SIG_WF + "/" + SIG_ACT + " " + ym + " " + lineStart + " ~ " + lineEnd);
+           SIG_WF + "/" + SIG_ACT + " " + ymd + " " + lineStart + " ~ " + lineEnd);
       }
     } catch (e) {
       ok("PostEvent 발사", false, e.toString());
