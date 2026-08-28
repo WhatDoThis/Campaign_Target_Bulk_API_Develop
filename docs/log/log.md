@@ -2,6 +2,14 @@
 
 ## Log Index
 
+77. 2026-08-28 GitHub Develop 리모트 동기화
+76. 2026-08-25 Factory End Status 시그널 조건부 발송
+75. 2026-08-25 Sample 롤백 스크립트 효율화 (04_resetSamplePending)
+74. 2026-08-25 GRAND_TOTAL 무제한 기본·WORKER_COUNT 5
+73. 2026-08-25 ROUND_LIMIT 빈값 fallback 1천만
+72. 2026-08-25 Factory Distributor COUNT 제거·dense 분할
+71. 2026-08-25 Factory Config pending COUNT 스턱 제거
+70. 2026-08-25 worker.js 줄바꿈 정리
 69. 2026-08-25 GitHub Develop 리모트 동기화
 68. 2026-08-25 설정 소유권 정리 — SMOKE_CFG / FACTORY_CFG / BULK_CFG 분리
 67. 2026-08-25 FIX-45~50 설정 소유권 Factory/BULK_CFG 재배치
@@ -73,6 +81,71 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+77. 2026-08-28 GitHub Develop 리모트 동기화
+Purpose: Factory 성능·종료·롤백 스크립트 변경을 origin/main에 올린다.
+Changes:
+
+- dense 분할, pending COUNT 생략, 03_End 조건부 Status, 04_resetSamplePending
+Changed files: docs/log/log.md, new_ver/workflow/factory/*.js, new_ver/workflow/worker/worker.js, new_ver/sql/04_resetSamplePending.*
+
+76. 2026-08-25 Factory End Status 시그널 조건부 발송
+Purpose: 실패·무처리 finish 경로에서 Status WF 시그널 불필요 — 정상 종료만 PostEvent.
+Changes:
+
+- factory/03_End.js: sent>0 + finishReason completed|cap_reached 일 때만 sigStatus
+- 01_WorkerDistributor·02_Polling: finishReason 설정 (no_target/no_workers/forced/completed/cap_reached)
+- 00_Config: finishReason 초기화
+Changed files: new_ver/workflow/factory/03_End.js, 00_Config.js, 01_WorkerDistributor.js, 02_Polling.js, docs/log/log.md
+
+75. 2026-08-25 Sample 롤백 스크립트 효율화 (04_resetSamplePending)
+Purpose: lineNo 0~50M 구간 루프 롤백의 비효율(변경 ~200만 건만인데 250회 스캔) 개선.
+Changes:
+
+- sql/04_resetSamplePending.js: sapiyn=Y LIMIT 배치 UPDATE + orphan FK 2차
+- sql/04_resetSamplePending.sql: psql 확인·원샷 UPDATE 참고
+Changed files: new_ver/sql/04_resetSamplePending.js, new_ver/sql/04_resetSamplePending.sql, docs/log/log.md
+
+74. 2026-08-25 GRAND_TOTAL 무제한 기본·WORKER_COUNT 5
+Purpose: 적재월일 전량 전송 시 GRAND_TOTAL 상한(1천만)에 걸리지 않도록 0=무제한 기본값으로 변경.
+Changes:
+
+- FACTORY_CFG.GRAND_TOTAL: 10000000 → 0 (pending 소진까지)
+- FACTORY_CFG.WORKER_COUNT: 5
+Changed files: new_ver/workflow/factory/00_Config.js, docs/log/log.md
+
+73. 2026-08-25 ROUND_LIMIT 빈값 fallback 1천만
+Purpose: ROUND_LIMIT 미설정 시 단일 라운드 상한 fallback 을 5천만 → 1천만으로 조정.
+Changes:
+
+- 00_Config: roundLimit fallback 50000000 → 10000000
+- 01_Distributor: NUM(ROUND_LIMIT) 기본값 10000000
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, docs/log/log.md
+
+72. 2026-08-25 Factory Distributor COUNT 제거·dense 분할
+Purpose: 01 splitBounds MIN/MAX/COUNT(*) 가 5천만 pending 에서 라운드당 ~5분 소요하던 병목 제거.
+Changes:
+
+- splitBounds: sqlSelect COUNT 제거 → head + queueTail(1건) + 산술 cap
+- FACTORY_CFG.DENSE_LINE_SPLIT 기본 true — lineNo 밀집 큐 운영
+- false 시 offset tail 조회(희소 큐용, 대 cap 에서 느릴 수 있음)
+Changed files: new_ver/workflow/factory/00_Config.js, new_ver/workflow/factory/01_WorkerDistributor.js, docs/log/log.md
+
+71. 2026-08-25 Factory Config pending COUNT 스턱 제거
+Purpose: 00_Config sqlSelect COUNT(*) 가 대량 pending 에서 ACC 타임아웃(PGS cancel) 유발하던 문제 제거.
+Changes:
+
+- FACTORY_CFG.PENDING_START_COUNT 기본 false — Config 에서 count 생략
+- true 일 때만 queryDef count(idx_pending_queue 조건) 사용
+- sqlSelect 물리 테이블 COUNT 제거
+Changed files: new_ver/workflow/factory/00_Config.js, docs/log/log.md
+
+70. 2026-08-25 worker.js 줄바꿈 정리
+Purpose: workflow/worker/worker.js 의 줄마다 빈 줄이 들어간 비정상 포맷을 프로젝트 관례에 맞게 정리.
+Changes:
+
+- worker.js: 불필요 빈 줄 제거, 로직·내용 변경 없음
+Changed files: new_ver/workflow/worker/worker.js, docs/log/log.md
 
 69. 2026-08-25 GitHub Develop 리모트 동기화
 Purpose: SMOKE_CFG/FACTORY_CFG/BULK_CFG 설정 소유권 분리를 origin/main에 올린다.

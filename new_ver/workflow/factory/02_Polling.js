@@ -139,15 +139,18 @@ if (String(instance.vars.nextAction) === "finish") {
       if (roundNo >= MAX_ROUND) {
         logError("[Polling] 라운드 상한 " + MAX_ROUND + " 초과 → 강제 종료");
         instance.vars.nextAction = "finish";
+        instance.vars.finishReason = "forced";
       } else {
         instance.vars.nextAction = "next";
         logWarning("[Polling] pending 조회 실패 → next (재분배)");
       }
     } else if (countStatus === 0) {
       instance.vars.nextAction = "finish";
+      instance.vars.finishReason = "completed";
       logInfo("[Polling] 미전송 0건 → finish");
     } else if (GRAND_TOTAL > 0 && processed >= GRAND_TOTAL) {
       instance.vars.nextAction = "finish";
+      instance.vars.finishReason = "cap_reached";
       logWarning("[Polling] GRAND_TOTAL(" + GRAND_TOTAL + ") 도달. 미전송 잔존 → 다음 실행");
     } else {
       instance.vars.nextAction = "next";
@@ -161,6 +164,7 @@ if (String(instance.vars.nextAction) === "finish") {
         instance.vars.stallCount = stall;
         if (stall >= MAX_STALL) {
           instance.vars.nextAction = "finish";
+          instance.vars.finishReason = "forced";
           logError("[Polling] " + MAX_STALL + "라운드 연속 처리량 0 → 강제 종료"
             + " processed=" + processed
             + " / 워커상태=" + summary.join(", ")
@@ -174,9 +178,12 @@ if (String(instance.vars.nextAction) === "finish") {
 
     if (String(instance.vars.nextAction) === "finish") {
       var startCnt = NUM(instance.vars.pendingStartCnt, -1);
+      var fReason = String(instance.vars.finishReason || "");
       logInfo("===== [Factory] 종료 =====");
       logInfo("  sessionRunId=" + String(instance.vars.sessionRunId || "")
         + " / BIZ_DATE=" + BIZ_DATE
+        + " / finishReason=" + (fReason || "(none)")
+        + " / statusSignal=" + (processed > 0 && (fReason === "completed" || fReason === "cap_reached") ? "Y" : "N")
         + " / rounds=" + roundNo
         + " / sent=" + processed
         + " / failed=" + NUM(instance.vars.globalFailed, 0)

@@ -7,11 +7,11 @@
  *   Start → 00 → 01 → 02 → 03_Test
  *     Test working → Wait 15s → 02
  *     Test next    → 01
- *     Test finish  → End (+ Status Signal PostEvent)
+ *     Test finish  → End (03_End.js — 정상 종료만 Status Signal)
  *
  * [Main Functions]
  * 1. FACTORY_CFG — WORKER/BATCH/CUSTOM_ATTR·GRAND_TOTAL·BIZ_DATE·폴링
- * 2. BULK_CFG 정합·MEMBER_TABLE·pending 시작 건수
+ * 2. BULK_CFG 정합·MEMBER_TABLE·pending 시작 건수(선택)
  * 3. instance.vars 전파·sessionRunId
  *
  * [Dependencies]
@@ -23,13 +23,17 @@ loadLibrary("wootar:testWooBulkApiWorker.js", false);
 var FACTORY_CFG = {
 
   /* ---- 라운드 스코프 ---- */
+  // 라운드당 line 구간 상한. ""/0 → fallback(아래 Config)
   ROUND_LIMIT   : 2000000,
+  
+  // 0 = 무제한 — BIZ_DATE pending 전량까지 라운드 반복.
   GRAND_TOTAL   : 10000000,
-  // 적재 기준일 YYYYMMDD. "" → 오늘. "20260824" → hardcode 재전송
+  
+  // 적재 기준일 YYYYMMDD. 빈값("")이면 오늘. 수기입력(ex. "20260824") 가능
   BIZ_DATE      : "",
 
   /* ---- 워커 배분 ---- */
-  WORKER_COUNT  : 3,
+  WORKER_COUNT  : 5,
   WORKER_MAX    : 15,
   BATCH_SIZE    : 50000,
 
@@ -56,7 +60,13 @@ var FACTORY_CFG = {
   MAX_ROUND     : 200,
   MAX_STALL     : 3,
   STAGGER_POST  : 300,
-  POLL_WAIT_SEC : 15
+  POLL_WAIT_SEC : 15,
+
+  // true: 시작 시 pending 건수 queryDef count (대량 테이블에서 Config 지연·취소 가능)
+  PENDING_START_COUNT : false,
+
+  // true: lineNo 밀집 큐 — COUNT/대 offset 없이 head+산술 cap 분할 (5천만 건급 운영)
+  DENSE_LINE_SPLIT    : true
 };
 
 if (typeof BULK_CFG === "undefined" || typeof BulkApiWorker !== "function") {
@@ -115,7 +125,7 @@ if (isNaN(grandTotal) || grandTotal < 0) grandTotal = 0;
 
 var roundLimit = parseInt(FACTORY_CFG.ROUND_LIMIT, 10);
 if (!(roundLimit >= 1)) {
-  roundLimit = (grandTotal > 0) ? grandTotal : 50000000;
+  roundLimit = (grandTotal > 0) ? grandTotal : 10000000;
 }
 
 var ROUND_CAP = wCount * batch * 40;
@@ -135,17 +145,19 @@ if (!memTable) {
 }
 
 var pendingStartCnt = -1;
-if (memTable) {
+if (FACTORY_CFG.PENDING_START_COUNT === true) {
   try {
-    var cntRs = sqlSelect("row,@cnt:long",
-      "SELECT COUNT(*) AS cnt FROM " + memTable + " s WHERE " + pendingSql);
-    if (cntRs && cntRs.row.length() > 0) {
-      for each (var crow in cntRs.row) {
-        pendingStartCnt = parseInt(String(crow.@cnt || crow.@CNT || 0), 10) || 0;
-      }
-    }
+    var cntQ = xtk.queryDef.create(
+      <queryDef schema={schema} operation="count">
+        <where>
+          <condition expr={pendingXPath}/>
+        </where>
+      </queryDef>
+    ).ExecuteQuery();
+    pendingStartCnt = parseInt(cntQ.@count, 10) || 0;
   } catch (eCnt) {
-    logWarning("[Config] pending COUNT 실패(진행 계속): " + (eCnt.message || eCnt));
+    logWarning("[Config] pending count 실패(진행 계속): "
+      + (eCnt.message || String(eCnt)));
   }
 }
 
@@ -159,6 +171,7 @@ instance.vars.sessionRunId    = sessionRunId;
 instance.vars.pendingStartCnt = pendingStartCnt;
 instance.vars.PENDING_COND     = pendingXPath;
 instance.vars.PENDING_COND_SQL = pendingSql;
+instance.vars.DENSE_LINE_SPLIT = (FACTORY_CFG.DENSE_LINE_SPLIT !== false) ? "true" : "false";
 instance.vars.WORKER_COUNT    = wCount;
 instance.vars.WORKER_MAX      = wMax;
 instance.vars.ROUND_LIMIT     = roundLimit;
@@ -186,18 +199,20 @@ instance.vars.globalProcessed = 0;
 instance.vars.globalFailed    = 0;
 instance.vars.pollCount       = 0;
 instance.vars.nextAction      = "";
+instance.vars.finishReason    = "";
 instance.vars.prevProcessed   = -1;
 instance.vars.stallCount      = 0;
 
 logInfo("[Config] sessionRunId=" + sessionRunId
   + " / BIZ_DATE=" + bizDate
   + (bizDateOverride ? " (hardcode)" : " (auto)")
-  + " / pendingStart=" + (pendingStartCnt >= 0 ? pendingStartCnt : "(조회실패)")
+  + " / pendingStart=" + (pendingStartCnt >= 0 ? pendingStartCnt
+    : (FACTORY_CFG.PENDING_START_COUNT === true ? "(조회실패)" : "(생략)"))
   + " / 워커 " + wCount + "/" + wMax
   + " / batch " + batch
   + " / roundLimit " + instance.vars.ROUND_LIMIT
   + " / grandTotal " + instance.vars.GRAND_TOTAL
-  + (grandTotal === 0 ? " (무제한)" : " (cap)")
+  + (grandTotal === 0 ? " (무제한·pending 소진까지)" : " (sent cap)")
   + " / pollWait " + instance.vars.POLL_WAIT_SEC + "s"
   + " / 스로틀 ~" + throttleMs + "ms"
   + " / custom=" + customAttr
