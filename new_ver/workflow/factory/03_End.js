@@ -38,5 +38,7 @@ if (sent > 0 && okReason) {
 } else {
   logInfo("[End] Status 시그널 생략 — sent=" + sent
     + " reason=" + (reason || "(none)")
-    + (sent <= 0 ? " (전송 0건)" : " (비정상·무처리 종료)"));
+    + (reason === "token_expired" ? " (토큰 만료)" : "")
+    + (sent <= 0 && reason !== "token_expired" ? " (전송 0건)" : "")
+    + (sent > 0 && !okReason ? " (비정상·무처리 종료)" : ""));
 }

@@ -1,18 +1,19 @@
 /* ============================================================================
  * TBAWFactory / 01_WorkerDistributor (구간 분할 + PostEvent)
  * ============================================================================
- * pending @apiYn='N' + BIZ_DATE(ingestYmd) 를 lineNo 구간 등분으로 워커 분할.
+ * pending @apiYn='N' + @ingestYmd(BIZ_DATE) + lineNo 구간 등분.
+ * PENDING_COND(Config)에 ingestYmd 고정 → orderBy @lineNo 만 사용.
  *
  * PostEvent vars: workerName, ingestYmd, bizDate, lineStart, lineEnd, runId, optKey,
  *   workerCount, workerMax, batchSize, customAttr, accountCpm, statusCpm, safetyRatio, staggerSlotMs
  *
  * [Main Functions]
- * 1. pending 첫 행·remaining 상한
- * 2. head + queueTail queryDef 분할 (COUNT/MIN/MAX sqlSelect 없음)
+ * 1. fetchHeadSql — pending head sqlSelect (PENDING_COND_SQL) · sparse offset/tail queryDef
+ * 2. splitBounds — dense: 산술 cap / sparse: offset tail
  * 3. 워커 WF PostEvent
  *
  * [Dependencies]
- * xtk.queryDef, xtk.workflow.PostEvent, setOption
+ * sqlSelect, xtk.queryDef, xtk.workflow.PostEvent, setOption
  * ==========================================================================*/
 
 function NUM(v, def) { var n = parseInt(v, 10); return isNaN(n) ? (def || 0) : n; }
@@ -24,6 +25,8 @@ if (String(instance.vars.nextAction) === "finish") {
 var SCHEMA      = String(instance.vars.MEMBER_SCHEMA);
 var ELEMENT     = String(instance.vars.MEMBER_ELEMENT);
 var COND        = String(instance.vars.PENDING_COND);
+var PENDING_SQL = String(instance.vars.PENDING_COND_SQL || "");
+var MEM_TABLE   = String(instance.vars.MEMBER_TABLE || "");
 var BIZ_DATE    = String(instance.vars.BIZ_DATE || "");
 var DENSE_SPLIT = (String(instance.vars.DENSE_LINE_SPLIT || "true") === "true");
 var W_COUNT     = NUM(instance.vars.WORKER_COUNT, 3);
@@ -38,8 +41,34 @@ var processed = NUM(instance.vars.globalProcessed);
 instance.vars.round = round;
 logInfo("===== [Distributor] Round " + round + " 시작 (누적 sent " + processed + ") =====");
 
-function sqlLit(s) {
-  return String(s === undefined || s === null ? "" : s).replace(/'/g, "''");
+// # 1. fetchHeadSql — dense head: sqlSelect(~20ms). 실패 시 queryDef fallback
+function fetchHeadSql() {
+  var row = { uid: "", ymd: "", line: 0 };
+  if (!MEM_TABLE || !PENDING_SQL) {
+    logWarning("[Distributor] MEMBER_TABLE/PENDING_COND_SQL 없음 — queryDef fallback");
+    return fetchRow(0, COND);
+  }
+  var sql = "SELECT s.smembershipuid AS uid, s.singestymd AS ymd, s.ilineno AS line"
+    + " FROM " + MEM_TABLE + " s WHERE " + PENDING_SQL
+    + " ORDER BY s.ilineno ASC LIMIT 1";
+  try {
+    var t0 = new Date().getTime();
+    var rs = sqlSelect("row,@uid:string,@ymd:string,@line:long", sql);
+    if (rs && rs.row.length() > 0) {
+      for each (var r in rs.row) {
+        row.uid  = String(r.@uid || "");
+        row.ymd  = String(r.@ymd || "");
+        row.line = parseInt(String(r.@line), 10) || 0;
+      }
+    }
+    logInfo("[Distributor] head sqlSelect " + (new Date().getTime() - t0)
+      + "ms line=" + row.line);
+    return row;
+  } catch (eHead) {
+    logWarning("[Distributor] head sqlSelect 실패 — queryDef fallback: "
+      + (eHead.message || eHead));
+    return fetchRow(0, COND);
+  }
 }
 
 function fetchRow(offset, cond) {
@@ -52,10 +81,7 @@ function fetchRow(offset, cond) {
         <node expr="@lineNo"/>
       </select>
       <where><condition expr={cond}/></where>
-      <orderBy>
-        <node expr="@ingestYmd" sortDesc="false"/>
-        <node expr="@lineNo" sortDesc="false"/>
-      </orderBy>
+      <orderBy><node expr="@lineNo" sortDesc="false"/></orderBy>
     </queryDef>
   ).ExecuteQuery();
   var row = { uid: "", ymd: "", line: 0 };
@@ -76,10 +102,7 @@ function fetchLastPending() {
         <node expr="@lineNo"/>
       </select>
       <where><condition expr={COND}/></where>
-      <orderBy>
-        <node expr="@ingestYmd" sortDesc="true"/>
-        <node expr="@lineNo" sortDesc="true"/>
-      </orderBy>
+      <orderBy><node expr="@lineNo" sortDesc="true"/></orderBy>
     </queryDef>
   ).ExecuteQuery();
   var row = { uid: "", ymd: "", line: 0 };
@@ -97,32 +120,31 @@ function splitBounds(head, wCount, remaining) {
   var ymd = String(head.ymd || "");
   if (lo < 1 || ymd.length !== 8) return bounds;
 
-  var effHi = lo;
-  if (remaining > 0) {
-    effHi = lo + remaining - 1;
-  }
+  var effHi = (remaining > 0) ? lo + remaining - 1 : lo;
+  var tailMax = effHi;
 
-  var last = fetchLastPending();
-  var tailMax = (last.line >= lo) ? last.line : lo;
-  if (last.line >= lo && last.line < effHi) {
-    effHi = last.line;
-  }
-
-  if (!DENSE_SPLIT && remaining > 0) {
-    var tail = fetchRow(remaining - 1, COND);
-    if (tail.line >= lo) {
-      effHi = tail.line;
+  if (!DENSE_SPLIT) {
+    var last = fetchLastPending();
+    tailMax = (last.line >= lo) ? last.line : lo;
+    if (last.line >= lo && last.line < effHi) {
+      effHi = last.line;
+    }
+    if (remaining > 0) {
+      var tail = fetchRow(remaining - 1, COND);
+      if (tail.line >= lo) {
+        effHi = tail.line;
+      } else if (last.line >= lo) {
+        effHi = last.line;
+      }
     } else if (last.line >= lo) {
       effHi = last.line;
     }
-  } else if (!DENSE_SPLIT && remaining <= 0 && last.line >= lo) {
-    effHi = last.line;
   }
 
   logInfo("[Distributor] round line " + lo + "~" + effHi
     + " / cap " + remaining
     + " / queueTail=" + tailMax
-    + (DENSE_SPLIT ? " (dense)" : " (offset-tail)"));
+    + (DENSE_SPLIT ? " (dense-cap)" : " (offset-tail)"));
 
   var span = effHi - lo + 1;
   if (span < 1) return bounds;
@@ -160,34 +182,10 @@ function splitBounds(head, wCount, remaining) {
   return bounds;
 }
 
-function fetchUidFromLine(ymd, fromLine, toLine) {
-  try {
-    var q = xtk.queryDef.create(
-      <queryDef schema={SCHEMA} operation="select" lineCount="1">
-        <select><node expr="@membershipUid"/><node expr="@lineNo"/></select>
-        <where>
-          <condition expr={"@apiYn = 'N' AND @ingestYmd = '" + sqlLit(ymd)
-            + "' AND @lineNo >= " + fromLine + " AND @lineNo <= " + toLine}/>
-        </where>
-        <orderBy><node expr="@lineNo" sortDesc="false"/></orderBy>
-      </queryDef>
-    ).ExecuteQuery();
-    for each (var r in q[ELEMENT]) return String(r.@membershipUid);
-    return "";
-  } catch (e) {
-    return "";
-  }
-}
-
-var head = fetchRow(0, COND);
+logInfo("[Distributor] pending head 조회...");
+var head = fetchHeadSql();
 if (head.uid === "" || head.line < 1 || head.ymd.length !== 8) {
   logInfo("[Distributor] 처리 대상 없음 → finish");
-  instance.vars.nextAction = "finish";
-  instance.vars.finishReason = "no_target";
-  instance.vars.roundSize = 0;
-  instance.vars.activeWorkers = 0;
-} else if (BIZ_DATE !== "" && head.ymd !== BIZ_DATE) {
-  logWarning("[Distributor] head ingestYmd=" + head.ymd + " != BIZ_DATE=" + BIZ_DATE + " → finish");
   instance.vars.nextAction = "finish";
   instance.vars.finishReason = "no_target";
   instance.vars.roundSize = 0;
@@ -339,9 +337,7 @@ for (j = 0; j < fireN; j++) {
     );
     active++;
     names.push(job.name);
-    job.b.su = fetchUidFromLine(job.b.ymd, job.b.s, job.b.e);
-    logInfo("  " + job.name + " → " + job.b.ymd + " line " + job.b.s + "~" + job.b.e
-      + " (uid " + (job.b.su || "(없음)") + ")");
+    logInfo("  " + job.name + " → " + job.b.ymd + " line " + job.b.s + "~" + job.b.e);
   } catch (ePe) {
     setOption(job.key, runId + "|error", "bulk worker status");
     logError("  " + job.name + " PostEvent 실패: " + (ePe.message || ePe));
@@ -354,9 +350,6 @@ instance.vars.roundSize     = remaining;
 instance.vars.nextAction    = (active === 0) ? "finish" : "working";
 if (active === 0) {
   instance.vars.finishReason = "no_workers";
-}
-
-if (active === 0) {
   logWarning("[Distributor] 트리거된 워커 없음 → finish");
 } else {
   logInfo("[Distributor] Round " + round + " 발사 " + active + " / runId=" + runId);

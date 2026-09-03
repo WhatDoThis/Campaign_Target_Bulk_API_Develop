@@ -2,7 +2,12 @@
 
 ## Log Index
 
-77. 2026-08-28 GitHub Develop 리모트 동기화
+86. 2026-09-03 GitHub Develop 리모트 동기화
+85. 2026-09-03 MW-2 SegPatch Job 다중 규칙 아이디어 (04_SegmentDeltaGuide)
+84. 2026-09-03 세그·큐 미들웨어 아이디어 정리 (04_SegmentDeltaGuide, 미확정)
+83. 2026-08-31 Distributor head sqlSelect 전환 (queryDef ~90s → ~20ms)
+82. 2026-08-31 Distributor dead code 정리(ymdFixed·head ymd 검증·fetchUid)
+81. 2026-08-31 Distributor dense tail 조회 생략·head 진행 로그
 76. 2026-08-25 Factory End Status 시그널 조건부 발송
 75. 2026-08-25 Sample 롤백 스크립트 효율화 (04_resetSamplePending)
 74. 2026-08-25 GRAND_TOTAL 무제한 기본·WORKER_COUNT 5
@@ -81,6 +86,87 @@
 1. 2026-08-19 old_ver Logic 보강 및 Profile API 연동 설명서 작성
 
 ## Log Body
+
+86. 2026-09-03 GitHub Develop 리모트 동기화
+Purpose: 토큰 만료 가드·Distributor 성능·세그 미들웨어 아이디어를 origin/main에 올린다.
+Changes:
+
+- Profile API 토큰 만료 차단·알림, jsSignalValueCheck, Distributor head sqlSelect
+- 04_SegmentDeltaGuide.md (MW-1/MW-2 아이디어)
+Changed files: docs/log/log.md, new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/factory/*.js, new_ver/workflow/token/jsSignalValueCheck.js, new_ver/docs/04_SegmentDeltaGuide.md
+
+85. 2026-09-03 MW-2 SegPatch Job 다중 규칙 아이디어 (04_SegmentDeltaGuide)
+Purpose: 단일 seg 수정 대신 rules[] 다중 Job·batch/sequential·변경행 apiYn=N 일괄 반영 아이디어 문서화.
+Changes:
+
+- 04_SegmentDeltaGuide.md §2.2: SegPatch Job, 예시 3규칙 매핑, applyMode, T9~T12
+Changed files: new_ver/docs/04_SegmentDeltaGuide.md, docs/log/log.md
+
+84. 2026-09-03 세그·큐 미들웨어 아이디어 정리 (04_SegmentDeltaGuide, 미확정)
+Purpose: 구현 미정 상태에서 MW-1(UID seg 병합·큐키) / MW-2(특정 seg segId 수정) 아이디어만 문서화.
+Changes:
+
+- 04_SegmentDeltaGuide.md: 아이디어·TBD 중심으로 재구성, Patch Tier는 참고 메모로 격하
+Changed files: new_ver/docs/04_SegmentDeltaGuide.md, docs/log/log.md
+
+83. 2026-08-31 Distributor head sqlSelect 전환 (queryDef ~90s → ~20ms)
+Purpose: dense head 조회는 스칼라 3필드만 필요 — queryDef ACC 레이어 병목(~90s) 제거.
+Changes:
+
+- fetchHeadSql: PENDING_COND_SQL + MEMBER_TABLE sqlSelect LIMIT 1
+- 실패 시 fetchRow(0) queryDef fallback
+- sparse offset/tail·wfStarted는 queryDef 유지
+Changed files: new_ver/workflow/factory/01_WorkerDistributor.js, docs/log/log.md
+
+82. 2026-08-31 Distributor dead code 정리(ymdFixed·head ymd 검증·fetchUid)
+Purpose: PENDING_COND에 ingestYmd 고정 — orderBy 이중 분기·중복 검증·로그용 query 제거.
+Changes:
+
+- fetchRow/fetchLastPending: lineNo orderBy 단일 경로
+- head.ymd≠BIZ_DATE 분기 제거(COND와 동일)
+- fetchUidFromLine 제거(발사마다 query 5회, 로그용만)
+Changed files: new_ver/workflow/factory/01_WorkerDistributor.js, docs/log/log.md
+
+81. 2026-08-31 Distributor dense tail 조회 생략·head 진행 로그
+Purpose: Round 1 시작 후 fetchLastPending(MAX lineNo DESC) 에서 5천만 건 테이블 지연.
+Changes:
+
+- dense 모드: fetchLastPending 생략, 산술 cap 만 사용 (dense-cap)
+- BIZ_DATE 고정 시 orderBy lineNo 단일
+- pending head 조회 전후 로그
+Changed files: new_ver/workflow/factory/01_WorkerDistributor.js, docs/log/log.md
+
+80. 2026-08-31 jsSignalValueCheck 단순화·토큰 PostEvent bizDate 제거
+Purpose: 알림 WF는 시그널 수신값만 표시. 만료 판정은 Factory Config(todayYmd) 전담.
+Changes:
+
+- jsSignalValueCheck: 재판정·검증·BULK_CFG 로그 제거, 1줄 로그 + instance.vars
+- postTokenExpireNotify: bizDate → tokenAsOfYmd(판정 기준일)
+Changed files: new_ver/workflow/token/jsSignalValueCheck.js, testWooBulkApiWorker.js, factory/00_Config.js, docs/log/log.md
+
+79. 2026-08-28 토큰 만료 판정 todayYmd 분리(BIZ_DATE 버그 수정)
+Purpose: evalTokenExpiry가 BIZ_DATE(적재일) 기준이라 block 테스트 실패 — 실제 오늘 기준으로 수정.
+Changes:
+
+- 00_Config: todayYmd=resolveBizDate("") 로 만료·알림 dedup, bizDate는 pending 전용 유지
+Changed files: new_ver/workflow/factory/00_Config.js, docs/log/log.md
+
+78. 2026-08-28 Token 알림 WF jsSignalValueCheck 추가
+Purpose: sigTokenExpire PostEvent vars 수신·검증·로그 (발송 전 확인용).
+Changes:
+
+- workflow/token/jsSignalValueCheck.js: resolve/validate/log + instance.vars 전파
+Changed files: new_ver/workflow/token/jsSignalValueCheck.js, docs/log/log.md
+
+77. 2026-08-28 Profile API 토큰 만료 가드·알림 시그널
+Purpose: 90일 토큰 만료 10일 전~1일 전 매일 알림, 만료일 이후 전송 차단.
+Changes:
+
+- BULK_CFG: AUTH_TOKEN_CREATED_YMD·VALID_DAYS·WARN_FROM/UNTIL·TOKEN_NOTIFY_WF/SIG
+- BulkApiWorker.evalTokenExpiry / postTokenExpireNotify
+- Factory 00_Config: tokenGate·일 1회 알림 PostEvent·block 시 finishReason=token_expired
+- 00a_Test TokenGate 캔버스 조건(proceed/block) 문서화
+Changed files: new_ver/js/testWooBulkApiWorker.js, new_ver/workflow/factory/00_Config.js, 03_End.js, docs/log/log.md
 
 77. 2026-08-28 GitHub Develop 리모트 동기화
 Purpose: Factory 성능·종료·롤백 스크립트 변경을 origin/main에 올린다.

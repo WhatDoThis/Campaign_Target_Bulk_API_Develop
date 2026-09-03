@@ -4,15 +4,22 @@
  * 연동 값: FACTORY_CFG(배분·레이트·라운드) + BULK_CFG(스키마·Target 규격).
  *
  * 캔버스:
- *   Start → 00 → 01 → 02 → 03_Test
- *     Test working → Wait 15s → 02
- *     Test next    → 01
- *     Test finish  → End (03_End.js — 정상 종료만 Status Signal)
+ *   Start → 00_Config → 00a_Test (TokenGate)
+ *     Test proceed → 01_WorkerDistributor → 02_Polling → 03_Test
+ *       Test working → Wait 15s → 02
+ *       Test next    → 01
+ *       Test finish  → End (03_End.js)
+ *     Test block     → End (토큰 만료 — Distributor 생략)
+ *
+ * [00a_Test TokenGate — JavaScript 조건 2개]
+ *   proceed: String(instance.vars.tokenGate) != 'block'  → 01_WorkerDistributor
+ *   block:   String(instance.vars.tokenGate) == 'block'  → End
  *
  * [Main Functions]
  * 1. FACTORY_CFG — WORKER/BATCH/CUSTOM_ATTR·GRAND_TOTAL·BIZ_DATE·폴링
  * 2. BULK_CFG 정합·MEMBER_TABLE·pending 시작 건수(선택)
- * 3. instance.vars 전파·sessionRunId
+ * 3. 토큰 만료일 계산·알림 PostEvent·tokenGate(block|proceed)
+ * 4. instance.vars 전파·sessionRunId
  *
  * [Dependencies]
  * wootar:testWooBulkApiWorker.js
@@ -24,21 +31,21 @@ var FACTORY_CFG = {
 
   /* ---- 라운드 스코프 ---- */
   // 라운드당 line 구간 상한. ""/0 → fallback(아래 Config)
-  ROUND_LIMIT   : 2000000,
+  ROUND_LIMIT   : 500000,
   
   // 0 = 무제한 — BIZ_DATE pending 전량까지 라운드 반복.
-  GRAND_TOTAL   : 10000000,
+  GRAND_TOTAL   : 1000000,
   
   // 적재 기준일 YYYYMMDD. 빈값("")이면 오늘. 수기입력(ex. "20260824") 가능
-  BIZ_DATE      : "",
-
+  BIZ_DATE      : "20260824",
+  
   /* ---- 워커 배분 ---- */
   WORKER_COUNT  : 5,
   WORKER_MAX    : 15,
   BATCH_SIZE    : 50000,
 
   /* ---- 전송 속성 ---- */
-  CUSTOM_ATTR   : "@planName",
+  CUSTOM_ATTR   : "@planName, @optimalSendTime, @mConsent",
 
   /* ---- 레이트 예산 ---- */
   ACCOUNT_CPM     : 50,
@@ -116,6 +123,7 @@ var throttleMs = BulkApiWorker.calcThrottleMs(wCount, {
 
 var bizDateOverride = String(FACTORY_CFG.BIZ_DATE || "").replace(/^\s+|\s+$/g, "");
 var bizDate = BulkApiWorker.resolveBizDate(bizDateOverride || undefined);
+var todayYmd = BulkApiWorker.resolveBizDate(""); // 토큰 만료·알림은 실제 오늘 기준(BIZ_DATE 적재일과 분리)
 if (!/^[0-9]{8}$/.test(bizDate)) {
   throw new Error("[Config] BIZ_DATE 형식 오류(YYYYMMDD 8자리): " + bizDate);
 }
@@ -163,6 +171,54 @@ if (FACTORY_CFG.PENDING_START_COUNT === true) {
 
 var sessionRunId = formatDate(new Date(), "%4Y%2M%2D%2H%2N%2S");
 
+instance.vars.tokenGate         = "proceed";
+instance.vars.tokenDaysLeft     = -1;
+instance.vars.tokenExpireYmd    = "";
+instance.vars.tokenNotifyPhase  = "";
+
+var tokenEval = BulkApiWorker.evalTokenExpiry({ todayYmd: todayYmd });
+if (!tokenEval.enabled) {
+  var hasToken = String(BULK_CFG.AUTH_TOKEN || "").replace(/^\s+|\s+$/g, "") !== "";
+  if (hasToken) {
+    logWarning("[Config] AUTH_TOKEN 설정됨 — AUTH_TOKEN_CREATED_YMD 미입력, 만료 가드 생략");
+  }
+} else if (tokenEval.error) {
+  logWarning("[Config] 토큰 만료일 계산 실패 — 가드 생략");
+} else {
+  instance.vars.tokenDaysLeft    = tokenEval.daysLeft;
+  instance.vars.tokenExpireYmd   = tokenEval.expireYmd;
+  instance.vars.tokenCreatedYmd  = tokenEval.createdYmd;
+
+  if (tokenEval.notify) {
+    instance.vars.tokenNotifyPhase = tokenEval.notifyPhase;
+    var notifyOptKey = String(BULK_CFG.TOKEN_NOTIFY_OPT_KEY || "BULK_TOKEN_LAST_NOTIFY_YMD");
+    var lastNotifyYmd = "";
+    try { lastNotifyYmd = String(getOption(notifyOptKey, false) || ""); } catch (eOpt) { lastNotifyYmd = ""; }
+    if (lastNotifyYmd === todayYmd) {
+      logInfo("[Config] Token 알림 생략 — 오늘(" + todayYmd + ") 이미 발송");
+    } else if (BulkApiWorker.postTokenExpireNotify(tokenEval, {
+      asOfYmd: todayYmd, sessionRunId: sessionRunId
+    })) {
+      try { setOption(notifyOptKey, todayYmd, "bulk token expiry last notify ymd"); } catch (eSet) {
+        logWarning("[Config] Token 알림 Option 저장 실패: " + (eSet.message || eSet));
+      }
+    }
+  }
+
+  if (tokenEval.block) {
+    instance.vars.tokenGate    = "block";
+    instance.vars.nextAction   = "finish";
+    instance.vars.finishReason = "token_expired";
+    logWarning("[Config] AUTH_TOKEN 만료 — 전송 중단 daysLeft=" + tokenEval.daysLeft
+      + " / expire=" + tokenEval.expireYmd
+      + " / created=" + tokenEval.createdYmd);
+  } else {
+    logInfo("[Config] Token expire=" + tokenEval.expireYmd
+      + " / 잔여 " + tokenEval.daysLeft + "일"
+      + (tokenEval.notify ? " / 알림=" + tokenEval.notifyPhase : ""));
+  }
+}
+
 instance.vars.MEMBER_SCHEMA   = schema;
 instance.vars.MEMBER_ELEMENT  = String(BULK_CFG.MEMBER_ELEMENT || schema.split(":")[1]);
 instance.vars.MEMBER_TABLE    = memTable;
@@ -198,8 +254,9 @@ instance.vars.round           = 0;
 instance.vars.globalProcessed = 0;
 instance.vars.globalFailed    = 0;
 instance.vars.pollCount       = 0;
-instance.vars.nextAction      = "";
-instance.vars.finishReason    = "";
+var tokenBlocked = (String(instance.vars.tokenGate) === "block");
+instance.vars.nextAction      = tokenBlocked ? "finish" : "";
+instance.vars.finishReason    = tokenBlocked ? "token_expired" : "";
 instance.vars.prevProcessed   = -1;
 instance.vars.stallCount      = 0;
 
@@ -217,4 +274,10 @@ logInfo("[Config] sessionRunId=" + sessionRunId
   + " / 스로틀 ~" + throttleMs + "ms"
   + " / custom=" + customAttr
   + " / table " + memTable
-  + " / schema " + schema);
+  + " / schema " + schema
+  + " / tokenGate=" + String(instance.vars.tokenGate || "proceed")
+  + (instance.vars.tokenExpireYmd
+    ? " / tokenExpire=" + instance.vars.tokenExpireYmd
+      + " left=" + instance.vars.tokenDaysLeft + "d"
+      + " (asOf=" + todayYmd + ")"
+    : ""));

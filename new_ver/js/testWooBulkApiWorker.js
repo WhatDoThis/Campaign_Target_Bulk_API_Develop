@@ -14,6 +14,7 @@
 // 5. saveMaster / updateSampleSent — Master 1건 + Sample 구간 sqlExec UPDATE
 // 6. parseCustomAttrs — "@planName, @phoneNumber" 또는 JSON 유사 배열
 // 7. resolveBizDate — BIZ_DATE 해석(시그널/Factory override, 없으면 오늘)
+// 8. evalTokenExpiry / postTokenExpireNotify — Profile API 토큰 90일 만료 가드·알림
 //
 // [Dependencies]
 // xtk.queryDef, xtk.session, HttpClientRequest, MemoryBuffer, sqlExec, sqlSelect
@@ -40,6 +41,16 @@ var BULK_CFG = {
     //   공식: /docs/target-dev/developer/implementation/methods/profile-api-settings
     AUTH_TOKEN  : "",
 
+    // ---- Profile API 토큰 만료 (생성 후 90일) ----
+    //   토큰 재발급 시 AUTH_TOKEN + AUTH_TOKEN_CREATED_YMD 둘 다 갱신
+    AUTH_TOKEN_CREATED_YMD  : "",           // YYYYMMDD. 비우면 만료 가드·알림 생략
+    AUTH_TOKEN_VALID_DAYS   : 90,
+    AUTH_TOKEN_WARN_FROM_DAYS : 10,         // 잔여 N일 이하부터 매일 알림 시작
+    AUTH_TOKEN_WARN_UNTIL_DAYS : 1,         // 잔여 M일까지 알림(1=만료 전날까지)
+    TOKEN_NOTIFY_WF         : "targetBulkApiTokenExpireNotification",
+    TOKEN_NOTIFY_SIG        : "sigTokenExpire",
+    TOKEN_NOTIFY_OPT_KEY    : "testWooTargetNotiFlag",
+
 
     // ---- 처리 규모 ----
     MAX_BATCH_ROWS      : 500000,           // profile-bulk-api 공식 행 상한 (하드 가드)
@@ -47,7 +58,7 @@ var BULK_CFG = {
     EXTRA_VAL_MAX       : 256,              // target-limits 속성값 256 chars
 
 
-    // ---- 대상 스키마 (Sample = 전송 큐) ----
+    // ---- 대상 스키마 (전송 큐) ----
     MEMBER_SCHEMA       : "wootar:testWooTargetSample",
     MEMBER_ELEMENT      : "testWooTargetSample",
     MEMBER_TABLE        : "wootartestwootargetsample",   // sqlExec UPDATE 용 물리 테이블(PG 소문자)
@@ -211,6 +222,127 @@ BulkApiWorker.resolveIngestYmd = function(p, bizDate) {
     return bizDate;
   }
   return raw;
+};
+
+
+// # 8. [Token] Profile API 토큰 만료일 — Factory 00_Config 일배치 가드
+BulkApiWorker.parseYmd = function(ymd) {
+  var s = String(ymd === undefined || ymd === null ? "" : ymd).replace(/^\s+|\s+$/g, "");
+  if (!/^[0-9]{8}$/.test(s)) return null;
+  var y = parseInt(s.substring(0, 4), 10);
+  var m = parseInt(s.substring(4, 6), 10) - 1;
+  var d = parseInt(s.substring(6, 8), 10);
+  var dt = new Date(y, m, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m || dt.getDate() !== d) return null;
+  return dt;
+};
+
+BulkApiWorker.formatYmd = function(dt) {
+  return formatDate(dt, "%4Y%2M%2D");
+};
+
+BulkApiWorker.addDaysYmd = function(ymd, days) {
+  var dt = BulkApiWorker.parseYmd(ymd);
+  if (!dt) return "";
+  dt.setDate(dt.getDate() + days);
+  return BulkApiWorker.formatYmd(dt);
+};
+
+BulkApiWorker.daysBetweenYmd = function(fromYmd, toYmd) {
+  var a = BulkApiWorker.parseYmd(fromYmd);
+  var b = BulkApiWorker.parseYmd(toYmd);
+  if (!a || !b) return null;
+  return Math.floor((b.getTime() - a.getTime()) / 86400000);
+};
+
+BulkApiWorker.evalTokenExpiry = function(cfg) {
+  cfg = cfg || {};
+  var created = String(
+    cfg.createdYmd !== undefined ? cfg.createdYmd : BULK_CFG.AUTH_TOKEN_CREATED_YMD
+  ).replace(/^\s+|\s+$/g, "");
+  var validDays = parseInt(
+    cfg.validDays !== undefined ? cfg.validDays : BULK_CFG.AUTH_TOKEN_VALID_DAYS, 10);
+  var warnFrom = parseInt(
+    cfg.warnFromDays !== undefined ? cfg.warnFromDays : BULK_CFG.AUTH_TOKEN_WARN_FROM_DAYS, 10);
+  var warnUntil = parseInt(
+    cfg.warnUntilDays !== undefined ? cfg.warnUntilDays : BULK_CFG.AUTH_TOKEN_WARN_UNTIL_DAYS, 10);
+  var todayYmd = cfg.todayYmd || BulkApiWorker.resolveBizDate("");
+
+  if (!created) {
+    return { enabled: false, reason: "no_created_ymd" };
+  }
+  if (!BulkApiWorker.parseYmd(created)) {
+    throw new Error("[BulkApiWorker] AUTH_TOKEN_CREATED_YMD 형식 오류(YYYYMMDD): " + created);
+  }
+  if (!(validDays >= 1)) validDays = 90;
+  if (!(warnFrom >= 1)) warnFrom = 10;
+  if (!(warnUntil >= 0)) warnUntil = 1;
+  if (warnUntil > warnFrom) {
+    warnUntil = warnFrom;
+  }
+
+  var expireYmd = BulkApiWorker.addDaysYmd(created, validDays);
+  var daysLeft = BulkApiWorker.daysBetweenYmd(todayYmd, expireYmd);
+  if (daysLeft === null || !expireYmd) {
+    return { enabled: true, error: "date_calc", createdYmd: created };
+  }
+
+  var notify = false;
+  var notifyPhase = "";
+  var block = false;
+
+  if (daysLeft <= 0) {
+    block = true;
+    notify = true;
+    notifyPhase = "expired";
+  } else if (daysLeft >= warnUntil && daysLeft <= warnFrom) {
+    notify = true;
+    notifyPhase = "warning";
+  }
+
+  return {
+    enabled: true,
+    createdYmd: created,
+    expireYmd: expireYmd,
+    validDays: validDays,
+    todayYmd: todayYmd,
+    daysLeft: daysLeft,
+    notify: notify,
+    notifyPhase: notifyPhase,
+    block: block,
+    warnFromDays: warnFrom,
+    warnUntilDays: warnUntil
+  };
+};
+
+BulkApiWorker.postTokenExpireNotify = function(info, extra) {
+  info = info || {};
+  extra = extra || {};
+  var wf = String(BULK_CFG.TOKEN_NOTIFY_WF || "targetBulkApiTokenExpireNotification");
+  var sig = String(BULK_CFG.TOKEN_NOTIFY_SIG || "sigTokenExpire");
+  var asOfYmd = String(extra.asOfYmd || info.todayYmd || BulkApiWorker.resolveBizDate(""));
+  try {
+    xtk.workflow.PostEvent(
+      wf, sig, "",
+      <variables
+        tokenCreatedYmd={String(info.createdYmd || "")}
+        tokenExpireYmd={String(info.expireYmd || "")}
+        tokenDaysLeft={String(info.daysLeft !== undefined && info.daysLeft !== null ? info.daysLeft : "")}
+        tokenPhase={String(info.notifyPhase || "")}
+        tokenValidDays={String(info.validDays || "")}
+        tokenAsOfYmd={asOfYmd}
+        sessionRunId={String(extra.sessionRunId || "")}/>,
+      false
+    );
+    logInfo("[BulkApiWorker] Token 알림 PostEvent " + wf + "/" + sig
+      + " phase=" + (info.notifyPhase || "")
+      + " daysLeft=" + info.daysLeft
+      + " asOf=" + asOfYmd);
+    return true;
+  } catch (ePe) {
+    logError("[BulkApiWorker] Token 알림 PostEvent 실패: " + (ePe.message || ePe));
+    return false;
+  }
 };
 
 
